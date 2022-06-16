@@ -31,14 +31,16 @@
 #include <ChipShellCollection.h>
 #include <lib/core/CHIPCore.h>
 #include <lib/shell/Engine.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/CHIPPlatformMemory.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/KeyValueStoreManager.h>
-#include <support/CHIPMem.h>
-#include <support/CHIPPlatformMemory.h>
 
+#include "matter_shell.h"
 #include <AppConfig.h>
 #include <app/server/Server.h>
 #include <init_efrPlatform.h>
+#include <sl_system_kernel.h>
 
 #ifdef HEAP_MONITORING
 #include "MemMonitoring.h"
@@ -62,13 +64,6 @@ using namespace ::chip;
 using namespace ::chip::DeviceLayer;
 using chip::Shell::Engine;
 
-#define SHELL_TASK_STACK_SIZE 8192
-#define SHELL_TASK_PRIORITY 3
-static TaskHandle_t sShellTaskHandle;
-#define APP_TASK_STACK_SIZE (1536)
-static StackType_t appStack[APP_TASK_STACK_SIZE / sizeof(StackType_t)];
-static StaticTask_t appTaskStruct;
-
 // ================================================================================
 // Supporting functions
 // ================================================================================
@@ -81,11 +76,9 @@ void appError(int err)
         ;
 }
 
-unsigned int sleep(unsigned int seconds)
+void appError(CHIP_ERROR error)
 {
-    const TickType_t xDelay = 1000 * seconds / portTICK_PERIOD_MS;
-    vTaskDelay(xDelay);
-    return 0;
+    appError(static_cast<int>(error.AsInteger()));
 }
 
 extern "C" void vApplicationIdleHook(void)
@@ -96,28 +89,18 @@ extern "C" void vApplicationIdleHook(void)
     Internal::EFR32Config::RepackNvm3Flash();
 }
 
-static void shell_task(void * args)
-{
-    Engine::Root().RunMainLoop();
-}
-
 // ================================================================================
 // Main Code
 // ================================================================================
 
 int main(void)
 {
-    int ret = CHIP_ERROR_MAX;
-
     init_efrPlatform();
     mbedtls_platform_set_calloc_free(CHIPPlatformMemoryCalloc, CHIPPlatformMemoryFree);
 
 #ifdef HEAP_MONITORING
     MemMonitoring::startHeapMonitoring();
 #endif
-
-    // Initialize mbedtls threading support on EFR32
-    THREADING_setup();
 
     EFR32_LOG("==================================================");
     EFR32_LOG("chip-efr32-shell-example starting");
@@ -127,15 +110,23 @@ int main(void)
 
     // Init Chip memory management before the stack
     chip::Platform::MemoryInit();
-    chip::DeviceLayer::PersistedStorage::KeyValueStoreMgrImpl().Init();
 
-    ret = PlatformMgr().InitChipStack();
+    CHIP_ERROR ret = PlatformMgr().InitChipStack();
     if (ret != CHIP_NO_ERROR)
     {
         EFR32_LOG("PlatformMgr().InitChipStack() failed");
         appError(ret);
     }
     chip::DeviceLayer::ConnectivityMgr().SetBLEDeviceName("EFR32_SHELL");
+
+    EFR32_LOG("Starting Platform Manager Event Loop");
+    ret = PlatformMgr().StartEventLoopTask();
+    if (ret != CHIP_NO_ERROR)
+    {
+        EFR32_LOG("PlatformMgr().StartEventLoopTask() failed");
+        appError(ret);
+    }
+
 #if CHIP_ENABLE_OPENTHREAD
     EFR32_LOG("Initializing OpenThread stack");
     ret = ThreadStackMgr().InitThreadStack();
@@ -153,14 +144,6 @@ int main(void)
     }
 #endif // CHIP_ENABLE_OPENTHREAD
 
-    EFR32_LOG("Starting Platform Manager Event Loop");
-    ret = PlatformMgr().StartEventLoopTask();
-    if (ret != CHIP_NO_ERROR)
-    {
-        EFR32_LOG("PlatformMgr().StartEventLoopTask() failed");
-        appError(ret);
-    }
-
 #if CHIP_ENABLE_OPENTHREAD
     EFR32_LOG("Starting OpenThread task");
 
@@ -173,18 +156,6 @@ int main(void)
     }
 #endif // CHIP_ENABLE_OPENTHREAD
 
-    ret = chip::Shell::streamer_init(chip::Shell::streamer_get());
-    assert(ret == 0);
-
-    cmd_otcli_init();
-    cmd_ping_init();
-    cmd_send_init();
-
-    sShellTaskHandle = xTaskCreateStatic(shell_task, APP_TASK_NAME, ArraySize(appStack), NULL, 1, appStack, &appTaskStruct);
-    if (!sShellTaskHandle)
-    {
-        EFR32_LOG("MEMORY ERROR!!!");
-    }
-
-    vTaskStartScheduler();
+    chip::startShellTask();
+    sl_system_kernel_start();
 }

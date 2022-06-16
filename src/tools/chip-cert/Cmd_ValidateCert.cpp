@@ -25,11 +25,13 @@
  */
 
 #include "chip-cert.h"
+#include <credentials/CHIPCertificateSet.h>
 
 #include "vector"
 
 namespace {
 
+using namespace chip;
 using namespace chip::ArgParser;
 using namespace chip::Credentials;
 using namespace chip::ASN1;
@@ -37,7 +39,7 @@ using namespace chip::ASN1;
 #define CMD_NAME "chip-cert validate-cert"
 
 bool HandleOption(const char * progName, OptionSet * optSet, int id, const char * name, const char * arg);
-bool HandleNonOptionArgs(const char * progName, int argc, char * argv[]);
+bool HandleNonOptionArgs(const char * progName, int argc, char * const argv[]);
 
 // clang-format off
 OptionDef gCmdOptionDefs[] =
@@ -92,9 +94,7 @@ OptionSet * gCmdOptionSets[] =
 
 enum
 {
-    kMaxCerts        = 16,
-    kTestCertBufSize = 1024, // Size of buffer needed to hold any of the test certificates
-                             // (in either CHIP or DER form), or to decode the certificates.
+    kMaxCerts = 16,
 };
 
 const char * gTargetCertFileName = nullptr;
@@ -119,7 +119,7 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
     return true;
 }
 
-bool HandleNonOptionArgs(const char * progName, int argc, char * argv[])
+bool HandleNonOptionArgs(const char * progName, int argc, char * const argv[])
 {
     if (argc == 0)
     {
@@ -145,10 +145,11 @@ bool Cmd_ValidateCert(int argc, char * argv[])
     bool res       = true;
     CHIP_ERROR err = CHIP_NO_ERROR;
     ChipCertificateSet certSet;
-    const ChipCertificateData * certToBeValidated;
-    ChipCertificateData * validatedCert;
+    const ChipCertificateData * certToBeValidated = nullptr;
+    const ChipCertificateData * validatedCert     = nullptr;
     ValidationContext context;
-    uint8_t certsBuf[kMaxCerts * kMaxChipCertBufSize];
+    uint8_t certsBuf[kMaxCerts * kMaxCHIPCertLength];
+    MutableByteSpan chipCert[kMaxCerts];
 
     context.Reset();
 
@@ -161,7 +162,7 @@ bool Cmd_ValidateCert(int argc, char * argv[])
     res = ParseArgs(CMD_NAME, argc, argv, gCmdOptionSets, HandleNonOptionArgs);
     VerifyTrueOrExit(res);
 
-    err = certSet.Init(kMaxCerts, kTestCertBufSize);
+    err = certSet.Init(kMaxCerts);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "Failed to initialize certificate set: %s\n", chip::ErrorStr(err));
@@ -170,22 +171,24 @@ bool Cmd_ValidateCert(int argc, char * argv[])
 
     for (size_t i = 0; i < gNumCertFileNames; i++)
     {
-        res = LoadChipCert(gCACertFileNames[i], gCACertIsTrusted[i], certSet, &certsBuf[i * kMaxChipCertBufSize],
-                           kMaxChipCertBufSize);
+        chipCert[i] = MutableByteSpan(&certsBuf[i * kMaxCHIPCertLength], kMaxCHIPCertLength);
+        res         = LoadChipCert(gCACertFileNames[i], gCACertIsTrusted[i], certSet, chipCert[i]);
         VerifyTrueOrExit(res);
     }
 
-    res =
-        LoadChipCert(gTargetCertFileName, false, certSet, &certsBuf[gNumCertFileNames * kMaxChipCertBufSize], kMaxChipCertBufSize);
+    chipCert[gNumCertFileNames] = MutableByteSpan(&certsBuf[gNumCertFileNames * kMaxCHIPCertLength], kMaxCHIPCertLength);
+    res                         = LoadChipCert(gTargetCertFileName, false, certSet, chipCert[gNumCertFileNames]);
     VerifyTrueOrExit(res);
 
     certToBeValidated = certSet.GetLastCert();
 
     context.Reset();
-    res = chip::UnixEpochToChipEpochTime(static_cast<uint32_t>(time(nullptr)), context.mEffectiveTime);
+    uint32_t currentTime;
+    res = chip::UnixEpochToChipEpochTime(static_cast<uint32_t>(time(nullptr)), currentTime);
+    context.mEffectiveTime.Set<CurrentChipEpochTime>(currentTime);
     VerifyTrueOrExit(res);
 
-    err = certSet.FindValidCert(certToBeValidated->mSubjectDN, certToBeValidated->mSubjectKeyId, context, validatedCert);
+    err = certSet.FindValidCert(certToBeValidated->mSubjectDN, certToBeValidated->mSubjectKeyId, context, &validatedCert);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "Failed certificate chain validation: %s\n", chip::ErrorStr(err));

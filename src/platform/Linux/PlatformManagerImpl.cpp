@@ -24,26 +24,43 @@
 
 #include <platform/internal/CHIPDeviceLayerInternal.h>
 
+#include <app-common/zap-generated/enums.h>
+#include <app-common/zap-generated/ids/Events.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/logging/CHIPLogging.h>
+#include <platform/DeviceControlServer.h>
+#include <platform/Linux/DiagnosticDataProviderImpl.h>
 #include <platform/PlatformManager.h>
-#include <platform/internal/GenericPlatformManagerImpl_POSIX.cpp>
-#include <support/CHIPMem.h>
-#include <support/logging/CHIPLogging.h>
+#include <platform/internal/GenericPlatformManagerImpl_POSIX.ipp>
 
 #include <thread>
 
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <unistd.h>
+
+#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 30
+#include <sys/syscall.h>
+#define gettid() syscall(SYS_gettid)
+#endif
+
+using namespace ::chip::app::Clusters;
 
 namespace chip {
 namespace DeviceLayer {
 
 PlatformManagerImpl PlatformManagerImpl::sInstance;
 
+namespace {
+
 #if CHIP_WITH_GIO
-static void GDBus_Thread()
+void GDBus_Thread()
 {
     GMainLoop * loop = g_main_loop_new(nullptr, false);
 
@@ -51,7 +68,9 @@ static void GDBus_Thread()
     g_main_loop_unref(loop);
 }
 #endif
+} // namespace
 
+#if CHIP_DEVICE_CONFIG_ENABLE_WIFI
 void PlatformManagerImpl::WiFIIPChangeListener()
 {
     int sock;
@@ -86,42 +105,59 @@ void PlatformManagerImpl::WiFIIPChangeListener()
                 struct rtattr * routeInfo         = IFA_RTA(addressMessage);
                 size_t rtl                        = IFA_PAYLOAD(header);
 
-                while (rtl && RTA_OK(routeInfo, rtl))
+                for (; rtl && RTA_OK(routeInfo, rtl); routeInfo = RTA_NEXT(routeInfo, rtl))
                 {
                     if (routeInfo->rta_type == IFA_LOCAL)
                     {
                         char name[IFNAMSIZ];
-                        ChipDeviceEvent event;
-                        if_indextoname(addressMessage->ifa_index, name);
-                        if (strcmp(name, CHIP_DEVICE_CONFIG_WIFI_STATION_IF_NAME) != 0)
+                        if (if_indextoname(addressMessage->ifa_index, name) == nullptr)
+                        {
+                            ChipLogError(DeviceLayer, "Error %d when getting the interface name at index: %d", errno,
+                                         addressMessage->ifa_index);
+                            continue;
+                        }
+
+                        if (ConnectivityManagerImpl::GetWiFiIfName() == nullptr)
+                        {
+                            ChipLogDetail(DeviceLayer, "No wifi interface name. Ignoring IP update event.");
+                            continue;
+                        }
+
+                        if (strcmp(name, ConnectivityManagerImpl::GetWiFiIfName()) != 0)
                         {
                             continue;
                         }
 
+                        char ipStrBuf[chip::Inet::IPAddress::kMaxStringLength] = { 0 };
+                        inet_ntop(AF_INET, RTA_DATA(routeInfo), ipStrBuf, sizeof(ipStrBuf));
+                        ChipLogDetail(DeviceLayer, "Got IP address on interface: %s IP: %s", name, ipStrBuf);
+
+                        ChipDeviceEvent event;
                         event.Type                            = DeviceEventType::kInternetConnectivityChange;
                         event.InternetConnectivityChange.IPv4 = kConnectivity_Established;
                         event.InternetConnectivityChange.IPv6 = kConnectivity_NoChange;
-                        inet_ntop(AF_INET, RTA_DATA(routeInfo), event.InternetConnectivityChange.address,
-                                  sizeof(event.InternetConnectivityChange.address));
 
-                        ChipLogDetail(DeviceLayer, "Got IP address on interface: %s IP: %s", name,
-                                      event.InternetConnectivityChange.address);
+                        if (!chip::Inet::IPAddress::FromString(ipStrBuf, event.InternetConnectivityChange.ipAddress))
+                        {
+                            ChipLogDetail(DeviceLayer, "Failed to report IP address - ip address parsing failed");
+                            continue;
+                        }
 
-                        PlatformMgr().LockChipStack();
-                        PlatformMgr().PostEvent(&event);
-                        PlatformMgr().UnlockChipStack();
+                        CHIP_ERROR status = PlatformMgr().PostEvent(&event);
+                        if (status != CHIP_NO_ERROR)
+                        {
+                            ChipLogDetail(DeviceLayer, "Failed to report IP address: %" CHIP_ERROR_FORMAT, status.Format());
+                        }
                     }
-                    routeInfo = RTA_NEXT(routeInfo, rtl);
                 }
             }
         }
     }
 }
+#endif // #if CHIP_DEVICE_CONFIG_ENABLE_WIFI
 
 CHIP_ERROR PlatformManagerImpl::_InitChipStack()
 {
-    CHIP_ERROR err;
-
 #if CHIP_WITH_GIO
     GError * error = nullptr;
 
@@ -131,19 +167,48 @@ CHIP_ERROR PlatformManagerImpl::_InitChipStack()
     gdbusThread.detach();
 #endif
 
+#if CHIP_DEVICE_CONFIG_ENABLE_WIFI
     std::thread wifiIPThread(WiFIIPChangeListener);
     wifiIPThread.detach();
+#endif
 
     // Initialize the configuration system.
-    err = Internal::PosixConfig::Init();
-    SuccessOrExit(err);
+    ReturnErrorOnFailure(Internal::PosixConfig::Init());
+    SetConfigurationMgr(&ConfigurationManagerImpl::GetDefaultInstance());
+    SetDiagnosticDataProvider(&DiagnosticDataProviderImpl::GetDefaultInstance());
+
     // Call _InitChipStack() on the generic implementation base class
     // to finish the initialization process.
-    err = Internal::GenericPlatformManagerImpl_POSIX<PlatformManagerImpl>::_InitChipStack();
-    SuccessOrExit(err);
+    ReturnErrorOnFailure(Internal::GenericPlatformManagerImpl_POSIX<PlatformManagerImpl>::_InitChipStack());
 
-exit:
-    return err;
+    mStartTime = System::SystemClock().GetMonotonicTimestamp();
+
+    return CHIP_NO_ERROR;
+}
+
+CHIP_ERROR PlatformManagerImpl::_Shutdown()
+{
+    uint64_t upTime = 0;
+
+    if (GetDiagnosticDataProvider().GetUpTime(upTime) == CHIP_NO_ERROR)
+    {
+        uint32_t totalOperationalHours = 0;
+
+        if (ConfigurationMgr().GetTotalOperationalHours(totalOperationalHours) == CHIP_NO_ERROR)
+        {
+            ConfigurationMgr().StoreTotalOperationalHours(totalOperationalHours + static_cast<uint32_t>(upTime / 3600));
+        }
+        else
+        {
+            ChipLogError(DeviceLayer, "Failed to get total operational hours of the Node");
+        }
+    }
+    else
+    {
+        ChipLogError(DeviceLayer, "Failed to get current uptime since the Node’s last reboot");
+    }
+
+    return Internal::GenericPlatformManagerImpl_POSIX<PlatformManagerImpl>::_Shutdown();
 }
 
 #if CHIP_WITH_GIO

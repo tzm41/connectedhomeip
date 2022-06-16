@@ -31,8 +31,8 @@
 
 #pragma once
 
-#include <support/CodeUtils.h>
-#include <support/Span.h>
+#include <lib/support/CodeUtils.h>
+#include <lib/support/Span.h>
 
 namespace chip {
 
@@ -88,13 +88,13 @@ public:
      * @brief
      *   Get the length of the byte data if the array is serialized.
      */
-    size_t SerializedSize() { return sizeof(uint64_t) * mNextAvailable; }
+    size_t SerializedSize() const { return sizeof(uint64_t) * mNextAvailable; }
 
     /**
      * @brief
      *   Get the maximum length of the byte data if the array were full and serialized.
      */
-    size_t MaxSerializedSize() { return sizeof(uint64_t) * mCapacity; }
+    size_t MaxSerializedSize() const { return sizeof(uint64_t) * mCapacity; }
 
     /**
      * @brief

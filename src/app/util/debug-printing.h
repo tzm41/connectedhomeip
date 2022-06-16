@@ -1722,75 +1722,6 @@
 #define emberAfSodiumConcentrationMeasurementClusterPrintString(buffer)
 #endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_SODIUM_CONCENTRATION_MEASUREMENT_CLUSTER)
 
-// Printing macros for cluster: IAS Zone
-#if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_ZONE_CLUSTER)
-#define emberAfIasZoneClusterPrint(...) emberAfPrint(EMBER_AF_PRINT_IAS_ZONE_CLUSTER, __VA_ARGS__)
-#define emberAfIasZoneClusterPrintln(...) emberAfPrintln(EMBER_AF_PRINT_IAS_ZONE_CLUSTER, __VA_ARGS__)
-// Blocking IO is enabled for all serial ports, therefore flush calls are unnecessary.
-#define emberAfIasZoneClusterFlush()
-#define emberAfIasZoneClusterDebugExec(x)                                                                                          \
-    if (emberAfPrintEnabled(EMBER_AF_PRINT_IAS_ZONE_CLUSTER))                                                                      \
-    {                                                                                                                              \
-        x;                                                                                                                         \
-    }
-#define emberAfIasZoneClusterPrintBuffer(buffer, len, withSpace)                                                                   \
-    emberAfPrintBuffer(EMBER_AF_PRINT_IAS_ZONE_CLUSTER, (buffer), (len), (withSpace))
-#define emberAfIasZoneClusterPrintString(buffer) emberAfPrintString(EMBER_AF_PRINT_IAS_ZONE_CLUSTER, (buffer))
-#else
-#define emberAfIasZoneClusterPrint(...)
-#define emberAfIasZoneClusterPrintln(...)
-#define emberAfIasZoneClusterFlush()
-#define emberAfIasZoneClusterDebugExec(x)
-#define emberAfIasZoneClusterPrintBuffer(buffer, len, withSpace)
-#define emberAfIasZoneClusterPrintString(buffer)
-#endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_ZONE_CLUSTER)
-
-// Printing macros for cluster: IAS ACE
-#if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_ACE_CLUSTER)
-#define emberAfIasAceClusterPrint(...) emberAfPrint(EMBER_AF_PRINT_IAS_ACE_CLUSTER, __VA_ARGS__)
-#define emberAfIasAceClusterPrintln(...) emberAfPrintln(EMBER_AF_PRINT_IAS_ACE_CLUSTER, __VA_ARGS__)
-// Blocking IO is enabled for all serial ports, therefore flush calls are unnecessary.
-#define emberAfIasAceClusterFlush()
-#define emberAfIasAceClusterDebugExec(x)                                                                                           \
-    if (emberAfPrintEnabled(EMBER_AF_PRINT_IAS_ACE_CLUSTER))                                                                       \
-    {                                                                                                                              \
-        x;                                                                                                                         \
-    }
-#define emberAfIasAceClusterPrintBuffer(buffer, len, withSpace)                                                                    \
-    emberAfPrintBuffer(EMBER_AF_PRINT_IAS_ACE_CLUSTER, (buffer), (len), (withSpace))
-#define emberAfIasAceClusterPrintString(buffer) emberAfPrintString(EMBER_AF_PRINT_IAS_ACE_CLUSTER, (buffer))
-#else
-#define emberAfIasAceClusterPrint(...)
-#define emberAfIasAceClusterPrintln(...)
-#define emberAfIasAceClusterFlush()
-#define emberAfIasAceClusterDebugExec(x)
-#define emberAfIasAceClusterPrintBuffer(buffer, len, withSpace)
-#define emberAfIasAceClusterPrintString(buffer)
-#endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_ACE_CLUSTER)
-
-// Printing macros for cluster: IAS WD
-#if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_WD_CLUSTER)
-#define emberAfIasWdClusterPrint(...) emberAfPrint(EMBER_AF_PRINT_IAS_WD_CLUSTER, __VA_ARGS__)
-#define emberAfIasWdClusterPrintln(...) emberAfPrintln(EMBER_AF_PRINT_IAS_WD_CLUSTER, __VA_ARGS__)
-// Blocking IO is enabled for all serial ports, therefore flush calls are unnecessary.
-#define emberAfIasWdClusterFlush()
-#define emberAfIasWdClusterDebugExec(x)                                                                                            \
-    if (emberAfPrintEnabled(EMBER_AF_PRINT_IAS_WD_CLUSTER))                                                                        \
-    {                                                                                                                              \
-        x;                                                                                                                         \
-    }
-#define emberAfIasWdClusterPrintBuffer(buffer, len, withSpace)                                                                     \
-    emberAfPrintBuffer(EMBER_AF_PRINT_IAS_WD_CLUSTER, (buffer), (len), (withSpace))
-#define emberAfIasWdClusterPrintString(buffer) emberAfPrintString(EMBER_AF_PRINT_IAS_WD_CLUSTER, (buffer))
-#else
-#define emberAfIasWdClusterPrint(...)
-#define emberAfIasWdClusterPrintln(...)
-#define emberAfIasWdClusterFlush()
-#define emberAfIasWdClusterDebugExec(x)
-#define emberAfIasWdClusterPrintBuffer(buffer, len, withSpace)
-#define emberAfIasWdClusterPrintString(buffer)
-#endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_IAS_WD_CLUSTER)
-
 // Printing macros for cluster: Generic Tunnel
 #if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_GENERIC_TUNNEL_CLUSTER)
 #define emberAfGenericTunnelClusterPrint(...) emberAfPrint(EMBER_AF_PRINT_GENERIC_TUNNEL_CLUSTER, __VA_ARGS__)
@@ -2771,54 +2702,6 @@
 #define emberAfAttributesPrintBuffer(buffer, len, withSpace)
 #define emberAfAttributesPrintString(buffer)
 #endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_ATTRIBUTES)
-
-// Printing macros for Reporting
-// Prints messages related to reporting
-#if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_REPORTING)
-#define emberAfReportingPrint(...) emberAfPrint(EMBER_AF_PRINT_REPORTING, __VA_ARGS__)
-#define emberAfReportingPrintln(...) emberAfPrintln(EMBER_AF_PRINT_REPORTING, __VA_ARGS__)
-// Blocking IO is enabled for all serial ports, therefore flush calls are unnecessary.
-#define emberAfReportingFlush()
-#define emberAfReportingDebugExec(x)                                                                                               \
-    if (emberAfPrintEnabled(EMBER_AF_PRINT_REPORTING))                                                                             \
-    {                                                                                                                              \
-        x;                                                                                                                         \
-    }
-#define emberAfReportingPrintBuffer(buffer, len, withSpace)                                                                        \
-    emberAfPrintBuffer(EMBER_AF_PRINT_REPORTING, (buffer), (len), (withSpace))
-#define emberAfReportingPrintString(buffer) emberAfPrintString(EMBER_AF_PRINT_REPORTING, (buffer))
-#else
-#define emberAfReportingPrint(...)
-#define emberAfReportingPrintln(...)
-#define emberAfReportingFlush()
-#define emberAfReportingDebugExec(x)
-#define emberAfReportingPrintBuffer(buffer, len, withSpace)
-#define emberAfReportingPrintString(buffer)
-#endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_REPORTING)
-
-// Printing macros for Service discovery
-// Prints messages related to service discovery
-#if defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_SERVICE_DISCOVERY)
-#define emberAfServiceDiscoveryPrint(...) emberAfPrint(EMBER_AF_PRINT_SERVICE_DISCOVERY, __VA_ARGS__)
-#define emberAfServiceDiscoveryPrintln(...) emberAfPrintln(EMBER_AF_PRINT_SERVICE_DISCOVERY, __VA_ARGS__)
-// Blocking IO is enabled for all serial ports, therefore flush calls are unnecessary.
-#define emberAfServiceDiscoveryFlush()
-#define emberAfServiceDiscoveryDebugExec(x)                                                                                        \
-    if (emberAfPrintEnabled(EMBER_AF_PRINT_SERVICE_DISCOVERY))                                                                     \
-    {                                                                                                                              \
-        x;                                                                                                                         \
-    }
-#define emberAfServiceDiscoveryPrintBuffer(buffer, len, withSpace)                                                                 \
-    emberAfPrintBuffer(EMBER_AF_PRINT_SERVICE_DISCOVERY, (buffer), (len), (withSpace))
-#define emberAfServiceDiscoveryPrintString(buffer) emberAfPrintString(EMBER_AF_PRINT_SERVICE_DISCOVERY, (buffer))
-#else
-#define emberAfServiceDiscoveryPrint(...)
-#define emberAfServiceDiscoveryPrintln(...)
-#define emberAfServiceDiscoveryFlush()
-#define emberAfServiceDiscoveryDebugExec(x)
-#define emberAfServiceDiscoveryPrintBuffer(buffer, len, withSpace)
-#define emberAfServiceDiscoveryPrintString(buffer)
-#endif // defined(EMBER_AF_PRINT_ENABLE) && defined(EMBER_AF_PRINT_SERVICE_DISCOVERY)
 
 // Printing macros for Registration
 // Prints messages related to registration

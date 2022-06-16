@@ -1,51 +1,79 @@
 ARG VERSION=latest
-FROM connectedhomeip/chip-build:${VERSION}
+FROM connectedhomeip/chip-build:${VERSION} as build
 
-# Telink Toolchain
-ARG TELINK_DIR=/opt/telink
-RUN dpkg --add-architecture i386 \
+RUN set -x \
     && apt-get update \
-    && apt-get install -y \
-    libc6:i386 \
-    libncurses5:i386 \
-    libstdc++6:i386 \
-    && mkdir ${TELINK_DIR} \
-    && cd ${TELINK_DIR} \
-    && wget http://wiki.telink-semi.cn/tools_and_sdk/Tools/IDE/telink_riscv_linux_toolchain.zip \
-    && unzip ${TELINK_DIR}/telink_riscv_linux_toolchain.zip -d ${TELINK_DIR} \
-    && rm ${TELINK_DIR}/telink_riscv_linux_toolchain.zip
+    && DEBIAN_FRONTEND=noninteractive apt-get install -fy --no-install-recommends \
+    wget=1.20.3-1ubuntu2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/ \
+    && : # last line
+
+# Setup toolchain
+RUN set -x \
+    && wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.13.2/zephyr-toolchain-riscv64-0.13.2-linux-x86_64-setup.run -O /tmp/zephyr-toolchain-riscv64-setup.run \
+    && chmod +x /tmp/zephyr-toolchain-riscv64-setup.run \
+    && /tmp/zephyr-toolchain-riscv64-setup.run -- -d /opt/telink/zephyr-sdk-0.13.2 \
+    && : # last line
 
 # Setup Zephyr
-ARG ZEPHYR_PROJECT_DIR=/opt/zephyrproject
-ENV PATH="/root/.local/bin:${PATH}"
-RUN DEBIAN_FRONTEND=noninteractive apt install -y \
-    git \
-    gperf \
-    ccache \
-    dfu-util \
-    device-tree-compiler \
-    wget \
-    xz-utils \
-    gcc-multilib \
-    g++-multilib \
-    libsdl2-dev \
-    && pip3 install --user -U west \
-    && pip3 install pyelftools \
-    && west init ${ZEPHYR_PROJECT_DIR} \
-    && cd ${ZEPHYR_PROJECT_DIR} && west update && west zephyr-export \
-    && python3 -m pip install -U pip \
-    && pip3 install --user -r ${ZEPHYR_PROJECT_DIR}/zephyr/scripts/requirements.txt
+ARG ZEPHYR_REVISION=95b54c90b1b7fb2626a9af3a5b7bd16459f35b45
+WORKDIR /opt/telink/zephyrproject
+RUN set -x \
+    && python3 -m pip install -U --no-cache-dir \
+    west==0.12.0 \
+    && git clone https://github.com/rikorsev/zephyr \
+    && cd zephyr \
+    && git reset ${ZEPHYR_REVISION} --hard \
+    && west init -l \
+    && cd .. \
+    && west update -o=--depth=1 -n -f smart \
+    && cd modules/hal/telink \
+    && git remote add telink https://github.com/rikorsev/hal_telink \
+    && git fetch telink telink_crypto \
+    && git checkout telink_crypto \
+    && west zephyr-export \
+    && : # last line
 
-# Workaround below is require due to Telink platform
-# is not included into official Zephyr repo yet.
-# Below step will be removed in future.
-RUN rm -rf ${ZEPHYR_PROJECT_DIR}/zephyr \
-    && git clone --branch telink_b91_tlsr9518adk80d_internal https://github.com/rikorsev/zephyr ${ZEPHYR_PROJECT_DIR}/zephyr \
-    && git clone https://github.com/rikorsev/telink_hal_zephyr ${ZEPHYR_PROJECT_DIR}/modules/hal/telink \
-    && cd ${ZEPHYR_PROJECT_DIR} && west update || true
+FROM connectedhomeip/chip-build:${VERSION}
 
+COPY --from=build /opt/telink/zephyr-sdk-0.13.2/ /opt/telink/zephyr-sdk-0.13.2/
+COPY --from=build /opt/telink/zephyrproject/ /opt/telink/zephyrproject/
+
+ENV ZEPHYR_TOOLCHAIN_VARIANT=zephyr
+ENV ZEPHYR_SDK_INSTALL_DIR=/opt/telink/zephyr-sdk-0.13.2
+
+RUN set -x \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -fy --no-install-recommends \
+    ccache=3.7.7-1 \
+    dfu-util=0.9-1 \
+    device-tree-compiler=1.5.1-1 \
+    gcc-multilib=4:9.3.0-1ubuntu2 \
+    g++-multilib=4:9.3.0-1ubuntu2 \
+    libsdl2-dev=2.0.10+dfsg1-3 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/ \
+    && python3 -m pip install -U --no-cache-dir \
+    pyelftools==0.27 \
+    && pip3 install --no-cache-dir --user -r /opt/telink/zephyrproject/zephyr/scripts/requirements.txt \
+    && : # last line
+
+# Setup Telink tools required for "west flash"
+ARG TELINK_TOOLS_BASE=/opt/telink/tools
+RUN wget http://wiki.telink-semi.cn/tools_and_sdk/Tools/IDE/telink_riscv_ice_flash_tool.zip -O /opt/telink/tools.zip \
+    && unzip /opt/telink/tools.zip -d ${TELINK_TOOLS_BASE} \
+    && rm /opt/telink/tools.zip \
+    && mv ${TELINK_TOOLS_BASE}/telink_riscv_linux_toolchain/* ${TELINK_TOOLS_BASE} \
+    && rm -rf ${TELINK_TOOLS_BASE}/telink_riscv_linux_toolchain \
+    && chmod +x ${TELINK_TOOLS_BASE}/flash/bin/SPI_burn \
+    && chmod +x ${TELINK_TOOLS_BASE}/ice/ICEman \
+    && : # last line
+
+# Add path to Telink tools
+ENV PATH="${TELINK_TOOLS_BASE}/flash/bin:${PATH}"
+ENV PATH="${TELINK_TOOLS_BASE}/ice:${PATH}"
+
+ARG ZEPHYR_PROJECT_DIR=/opt/telink/zephyrproject
+ENV TELINK_ZEPHYR_BASE=${ZEPHYR_PROJECT_DIR}/zephyr
 ENV ZEPHYR_BASE=${ZEPHYR_PROJECT_DIR}/zephyr
-ENV TELINK_TOOLCHAIN_PATH=${TELINK_DIR}/telink_riscv_linux_toolchain/nds32le-elf-mculib-v5f/bin
-
-# Required for west flash command
-ENV TELINK_TOOLCHAIN_BASE=${TELINK_DIR}/telink_riscv_linux_toolchain

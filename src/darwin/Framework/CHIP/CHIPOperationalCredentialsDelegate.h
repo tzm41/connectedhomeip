@@ -1,6 +1,6 @@
 /**
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -15,52 +15,107 @@
  *    limitations under the License.
  */
 
+#include <memory>
+
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 
-#import "CHIPError.h"
+#import "CHIPError_Internal.h"
+#import "CHIPKeypair.h"
+#import "CHIPP256KeypairBridge.h"
 #import "CHIPPersistentStorageDelegateBridge.h"
 
 #include <controller/OperationalCredentialsDelegate.h>
+#include <crypto/CHIPCryptoPAL.h>
+#include <lib/core/CASEAuthTag.h>
+#include <platform/Darwin/CHIPP256KeypairNativeBridge.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 class CHIPOperationalCredentialsDelegate : public chip::Controller::OperationalCredentialsDelegate {
 public:
-    CHIPOperationalCredentialsDelegate() {}
+    using ChipP256KeypairPtr = std::unique_ptr<chip::Crypto::P256Keypair>;
 
     ~CHIPOperationalCredentialsDelegate() {}
 
-    CHIP_ERROR init(CHIPPersistentStorageDelegateBridge * storage);
+    CHIP_ERROR Init(CHIPPersistentStorageDelegateBridge * storage, ChipP256KeypairPtr nocSigner, NSData * ipk, NSData * rootCert,
+        NSData * _Nullable icaCert);
 
-    CHIP_ERROR GenerateNodeOperationalCertificate(const chip::PeerId & peerId, const chip::ByteSpan & csr, int64_t serialNumber,
-        uint8_t * certBuf, uint32_t certBufSize, uint32_t & outCertLen) override;
+    CHIP_ERROR GenerateNOCChain(const chip::ByteSpan & csrElements, const chip::ByteSpan & csrNonce,
+        const chip::ByteSpan & attestationSignature, const chip::ByteSpan & attestationChallenge, const chip::ByteSpan & DAC,
+        const chip::ByteSpan & PAI, chip::Callback::Callback<chip::Controller::OnNOCChainGeneration> * onCompletion) override;
 
-    CHIP_ERROR GetRootCACertificate(
-        chip::FabricId fabricId, uint8_t * certBuf, uint32_t certBufSize, uint32_t & outCertLen) override;
+    void SetNodeIdForNextNOCRequest(chip::NodeId nodeId) override
+    {
+        mNextRequestedNodeId = nodeId;
+        mNodeIdRequested = true;
+    }
+
+    void SetFabricIdForNextNOCRequest(chip::FabricId fabricId) override { mNextFabricId = fabricId; }
+
+    void SetDeviceID(chip::NodeId deviceId) { mDeviceBeingPaired = deviceId; }
+    void ResetDeviceID() { mDeviceBeingPaired = chip::kUndefinedNodeId; }
+
+    CHIP_ERROR GenerateNOC(chip::NodeId nodeId, chip::FabricId fabricId, const chip::CATValues & cats,
+        const chip::Crypto::P256PublicKey & pubkey, chip::MutableByteSpan & noc);
+
+    const chip::Crypto::AesCcm128KeySpan GetIPK() { return mIPK.Span(); }
+
+    // Get the root/intermediate X.509 DER certs as a ByteSpan.
+    chip::ByteSpan RootCertSpan() const;
+    chip::ByteSpan IntermediateCertSpan() const;
+
+    // Generate a root (self-signed) DER-encoded X.509 certificate for the given
+    // CHIPKeypair.  If issuerId is provided, it is used; otherwise a random one
+    // is generated.  If a fabric id is provided it is added to the subject DN
+    // of the certificate.
+    //
+    // The outparam must not be null and is set to nil on errors.
+    static CHIP_ERROR GenerateRootCertificate(id<CHIPKeypair> keypair, NSNumber * _Nullable issuerId, NSNumber * _Nullable fabricId,
+        NSData * _Nullable __autoreleasing * _Nonnull rootCert);
+
+    // Generate an intermediate DER-encoded X.509 certificate for the given root
+    // and intermediate public key.  If issuerId is provided, it is used;
+    // otherwise a random one is generated.  If a fabric id is provided it is
+    // added to the subject DN of the certificate.
+    //
+    // The outparam must not be null and is set to nil on errors.
+    static CHIP_ERROR GenerateIntermediateCertificate(id<CHIPKeypair> rootKeypair, NSData * rootCertificate,
+        SecKeyRef intermediatePublicKey, NSNumber * _Nullable issuerId, NSNumber * _Nullable fabricId,
+        NSData * _Nullable __autoreleasing * _Nonnull intermediateCert);
+
+    // Generate an operational DER-encoded X.509 certificate for the given
+    // signing certificate and operational public key, using the given fabric
+    // id, node id, and CATs.
+    static CHIP_ERROR GenerateOperationalCertificate(id<CHIPKeypair> signingKeypair, NSData * signingCertificate,
+        SecKeyRef operationalPublicKey, NSNumber * fabricId, NSNumber * nodeId,
+        NSArray<NSNumber *> * _Nullable caseAuthenticatedTags, NSData * _Nullable __autoreleasing * _Nonnull operationalCert);
 
 private:
-    CHIP_ERROR GenerateKeys();
-    CHIP_ERROR LoadKeysFromKeyChain();
-    CHIP_ERROR DeleteKeys();
+    static bool ToChipEpochTime(uint32_t offset, uint32_t & epoch);
 
-    CHIP_ERROR ConvertToP256Keypair(SecKeyRef privateKey);
+    static CHIP_ERROR GenerateNOC(chip::Crypto::P256Keypair & signingKeypair, NSData * signingCertificate, chip::NodeId nodeId,
+        chip::FabricId fabricId, const chip::CATValues & cats, const chip::Crypto::P256PublicKey & pubkey,
+        chip::MutableByteSpan & noc);
 
-    CHIP_ERROR SetIssuerID(CHIPPersistentStorageDelegateBridge * storage);
+    ChipP256KeypairPtr mIssuerKey;
 
-    bool ToChipEpochTime(uint32_t offset, uint32_t & epoch);
+    chip::Crypto::AesCcm128Key mIPK;
 
-    chip::Crypto::P256Keypair mIssuerKey;
-    uint32_t mIssuerId = 1234;
-
-    const uint32_t kCertificateValiditySecs = 365 * 24 * 60 * 60;
-    const NSString * kCHIPCAKeyLabel = @"chip.nodeopcerts.CA:0";
-    const NSData * kCHIPCAKeyTag = [@"com.zigbee.chip.commissioner.ca.issuer.id" dataUsingEncoding:NSUTF8StringEncoding];
-
-    id mKeyType = (id) kSecAttrKeyTypeECSECPrimeRandom;
-    id mKeySize = @256;
+    static const uint32_t kCertificateValiditySecs = 365 * 24 * 60 * 60;
 
     CHIPPersistentStorageDelegateBridge * mStorage;
+
+    chip::NodeId mDeviceBeingPaired = chip::kUndefinedNodeId;
+
+    chip::NodeId mNextRequestedNodeId = 1;
+    chip::FabricId mNextFabricId = 1;
+    bool mNodeIdRequested = false;
+
+    // mRootCert should not really be nullable, but we are constructed before we
+    // have a root cert, and at that point it gets initialized to nil.
+    NSData * _Nullable mRootCert;
+    NSData * _Nullable mIntermediateCert;
 };
 
 NS_ASSUME_NONNULL_END

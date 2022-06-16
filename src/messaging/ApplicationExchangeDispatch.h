@@ -24,9 +24,8 @@
 
 #pragma once
 
+#include <lib/support/CodeUtils.h>
 #include <messaging/ExchangeMessageDispatch.h>
-#include <support/CodeUtils.h>
-#include <transport/SecureSessionMgr.h>
 
 namespace chip {
 namespace Messaging {
@@ -34,30 +33,17 @@ namespace Messaging {
 class ApplicationExchangeDispatch : public ExchangeMessageDispatch
 {
 public:
-    ApplicationExchangeDispatch() {}
-
-    virtual ~ApplicationExchangeDispatch() {}
-
-    CHIP_ERROR Init(SecureSessionMgr * sessionMgr)
+    static ExchangeMessageDispatch & Instance()
     {
-        ReturnErrorCodeIf(sessionMgr == nullptr, CHIP_ERROR_INVALID_ARGUMENT);
-        mSessionMgr = sessionMgr;
-        return ExchangeMessageDispatch::Init();
+        static ApplicationExchangeDispatch instance;
+        return instance;
     }
 
-    CHIP_ERROR ResendMessage(SecureSessionHandle session, EncryptedPacketBufferHandle && message,
-                             EncryptedPacketBufferHandle * retainedMessage) const override;
-
-    SecureSessionMgr * GetSessionMgr() const { return mSessionMgr; }
+    ApplicationExchangeDispatch() {}
+    ~ApplicationExchangeDispatch() override {}
 
 protected:
-    CHIP_ERROR SendMessageImpl(SecureSessionHandle session, PayloadHeader & payloadHeader, System::PacketBufferHandle && message,
-                               EncryptedPacketBufferHandle * retainedMessage) override;
-
-    bool MessagePermitted(uint16_t protocol, uint8_t type) override;
-
-private:
-    SecureSessionMgr * mSessionMgr = nullptr;
+    bool MessagePermitted(Protocols::Id protocol, uint8_t type) override;
 };
 
 } // namespace Messaging

@@ -27,7 +27,8 @@
 #include <nlbyteorder.h>
 #include <nlunit-test.h>
 
-#include <support/UnitTestRegistration.h>
+#include <lib/support/Span.h>
+#include <lib/support/UnitTestRegistration.h>
 
 using namespace chip;
 using namespace std;
@@ -90,15 +91,14 @@ void TestMaximumValues(nlTestSuite * inSuite, void * inContext)
     inPayload.discriminator = static_cast<uint16_t>((1 << kPayloadDiscriminatorFieldLengthInBits) - 1);
     inPayload.setUpPINCode  = static_cast<uint32_t>((1 << kSetupPINCodeFieldLengthInBits) - 1);
 
-    NL_TEST_ASSERT(inSuite, inPayload.isValidQRCodePayload());
-    NL_TEST_ASSERT(inSuite, CheckWriteRead(inPayload));
+    NL_TEST_ASSERT(inSuite, CheckWriteRead(inPayload, /* allowInvalidPayload */ true));
 }
 
 void TestPayloadByteArrayRep(nlTestSuite * inSuite, void * inContext)
 {
     SetupPayload payload = GetDefaultPayload();
 
-    string expected = " 0000 000000000000000100000000000 000010000000 00000001 00 0000000000000001 0000000000001100 101";
+    string expected = " 0000 000000000000000100000000000 000010000000 00000001 00 0000000000000001 0000000000001100 000";
     NL_TEST_ASSERT(inSuite, CompareBinary(payload, expected));
 }
 
@@ -117,54 +117,106 @@ void TestPayloadBase38Rep(nlTestSuite * inSuite, void * inContext)
 
 void TestBase38(nlTestSuite * inSuite, void * inContext)
 {
-    uint8_t input[] = { 10, 10, 10 };
+    uint8_t input[3] = { 10, 10, 10 };
+    char encodedBuf[64];
+    MutableByteSpan inputSpan(input);
+    MutableCharSpan encodedSpan(encodedBuf);
 
     // basic stuff
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 0).empty());
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 1) == "A0");
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 2) == "OT10");
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "-N.B0");
+    base38Encode(inputSpan.SubSpan(0, 0), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strlen(encodedBuf) == 0);
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 1), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "A0") == 0);
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 2), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "OT10") == 0);
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "-N.B0") == 0);
+
+    // test null termination of output buffer
+    encodedSpan             = MutableCharSpan(encodedBuf);
+    MutableCharSpan subSpan = encodedSpan.SubSpan(0, 2);
+    NL_TEST_ASSERT(inSuite, base38Encode(inputSpan.SubSpan(0, 1), subSpan) == CHIP_ERROR_BUFFER_TOO_SMALL);
+    // Force no nulls in output buffer
+    memset(encodedSpan.data(), '?', encodedSpan.size());
+    subSpan = encodedSpan.SubSpan(0, 3);
+    base38Encode(inputSpan.SubSpan(0, 1), subSpan);
+    size_t encodedLen = strnlen(encodedSpan.data(), ArraySize(encodedBuf));
+    NL_TEST_ASSERT(inSuite, encodedLen == strlen("A0"));
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "A0") == 0);
+
+    // passing empty parameters
+    MutableCharSpan emptySpan;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    NL_TEST_ASSERT(inSuite, base38Encode(inputSpan, emptySpan) == CHIP_ERROR_BUFFER_TOO_SMALL);
+    base38Encode(MutableByteSpan(), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "") == 0);
+    NL_TEST_ASSERT(inSuite, base38Encode(MutableByteSpan(), emptySpan) == CHIP_ERROR_BUFFER_TOO_SMALL);
 
     // test single odd byte corner conditions
-    input[2] = 0;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "OT100");
-    input[2] = 40;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "Y6V91");
-    input[2] = 41;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "KL0B1");
-    input[2] = 255;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "Q-M08");
+    encodedSpan = MutableCharSpan(encodedBuf);
+    input[2]    = 0;
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "OT100") == 0);
+    input[2]    = 40;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "Y6V91") == 0);
+    input[2]    = 41;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "KL0B1") == 0);
+    input[2]    = 255;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "Q-M08") == 0);
 
     // verify chunks of 1,2 and 3 bytes result in fixed-length strings padded with '0'
     // for 1 byte we need always 2 characters
-    input[0] = 35;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 1) == "Z0");
+    input[0]    = 35;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 1), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "Z0") == 0);
     // for 2 bytes we need always 4 characters
-    input[0] = 255;
-    input[1] = 0;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 2) == "R600");
+    input[0]    = 255;
+    input[1]    = 0;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 2), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "R600") == 0);
     // for 3 bytes we need always 5 characters
-    input[0] = 46;
-    input[1] = 0;
-    input[2] = 0;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "81000");
+    input[0]    = 46;
+    input[1]    = 0;
+    input[2]    = 0;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "81000") == 0);
 
     // verify maximum available values for each chunk size to check selecting proper characters number
     // for 1 byte we need 2 characters
-    input[0] = 255;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 1) == "R6");
+    input[0]    = 255;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 1), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "R6") == 0);
     // for 2 bytes we need 4 characters
-    input[0] = 255;
-    input[1] = 255;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 2) == "NE71");
+    input[0]    = 255;
+    input[1]    = 255;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan.SubSpan(0, 2), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "NE71") == 0);
     // for 3 bytes we need 5 characters
-    input[0] = 255;
-    input[1] = 255;
-    input[2] = 255;
-    NL_TEST_ASSERT(inSuite, base38Encode(input, 3) == "PLS18");
+    input[0]    = 255;
+    input[1]    = 255;
+    input[2]    = 255;
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(inputSpan, encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "PLS18") == 0);
 
     // fun with strings
-    NL_TEST_ASSERT(inSuite, base38Encode((uint8_t *) "Hello World!", sizeof("Hello World!") - 1) == "KKHF3W2S013OPM3EJX11");
+    encodedSpan = MutableCharSpan(encodedBuf);
+    base38Encode(ByteSpan((uint8_t *) "Hello World!", sizeof("Hello World!") - 1), encodedSpan);
+    NL_TEST_ASSERT(inSuite, strcmp(encodedBuf, "KKHF3W2S013OPM3EJX11") == 0);
 
     vector<uint8_t> decoded = vector<uint8_t>();
     NL_TEST_ASSERT(inSuite, base38Decode("KKHF3W2S013OPM3EJX11", decoded) == CHIP_NO_ERROR);
@@ -336,23 +388,23 @@ void TestQRCodeToPayloadGeneration(nlTestSuite * inSuite, void * inContext)
 
 void TestExtractPayload(nlTestSuite * inSuite, void * inContext)
 {
-    NL_TEST_ASSERT(inSuite, extractPayload(string("MT:ABC")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("MT:")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("H:")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("ASMT:")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("Z%MT:ABC%")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("Z%MT:ABC")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%Z%MT:ABC")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%Z%MT:ABC%")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%Z%MT:ABC%DDD")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("MT:ABC%DDD")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("MT:ABC%")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%MT:")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%MT:%")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("A%")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("MT:%")) == string(""));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("%MT:ABC")) == string("ABC"));
-    NL_TEST_ASSERT(inSuite, extractPayload(string("ABC")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("MT:ABC")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("MT:")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("H:")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("ASMT:")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("Z%MT:ABC%")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("Z%MT:ABC")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%Z%MT:ABC")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%Z%MT:ABC%")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%Z%MT:ABC%DDD")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("MT:ABC%DDD")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("MT:ABC%")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%MT:")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%MT:%")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("A%")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("MT:%")) == string(""));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("%MT:ABC")) == string("ABC"));
+    NL_TEST_ASSERT(inSuite, QRCodeSetupPayloadParser::ExtractPayload(string("ABC")) == string(""));
 }
 
 // Test Suite

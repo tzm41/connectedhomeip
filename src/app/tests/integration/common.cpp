@@ -25,13 +25,19 @@
 #include <errno.h>
 
 #include <app/tests/integration/common.h>
-#include <core/CHIPCore.h>
-#include <core/CHIPTLVDebug.hpp>
+#include <lib/core/CHIPCore.h>
+#include <lib/core/CHIPTLVDebug.hpp>
+#include <lib/support/EnforceFormat.h>
+#include <lib/support/ErrorStr.h>
+#include <lib/support/logging/Constants.h>
 #include <platform/CHIPDeviceLayer.h>
-#include <support/ErrorStr.h>
 
-// The ExchangeManager global object.
+chip::FabricTable gFabricTable;
 chip::Messaging::ExchangeManager gExchangeManager;
+chip::SessionManager gSessionManager;
+chip::secure_channel::MessageCounterManager gMessageCounterManager;
+chip::SessionHolder gSession;
+chip::TestPersistentStorageDelegate gStorage;
 
 void InitializeChip(void)
 {
@@ -57,11 +63,13 @@ exit:
 
 void ShutdownChip(void)
 {
+    gMessageCounterManager.Shutdown();
     gExchangeManager.Shutdown();
+    gSessionManager.Shutdown();
     chip::DeviceLayer::PlatformMgr().Shutdown();
 }
 
-void TLVPrettyPrinter(const char * aFormat, ...)
+void ENFORCE_FORMAT(1, 2) TLVPrettyPrinter(const char * aFormat, ...)
 {
     va_list args;
 

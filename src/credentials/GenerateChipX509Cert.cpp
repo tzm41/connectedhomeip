@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *    All rights reserved.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,39 +26,33 @@
 #define __STDC_LIMIT_MACROS
 #endif
 
+#include <algorithm>
 #include <inttypes.h>
 #include <stddef.h>
 
-#include <asn1/ASN1.h>
-#include <asn1/ASN1Macros.h>
-#include <core/CHIPCore.h>
-#include <core/CHIPSafeCasts.h>
 #include <credentials/CHIPCert.h>
+#include <lib/asn1/ASN1.h>
+#include <lib/asn1/ASN1Macros.h>
+#include <lib/core/CHIPCore.h>
+#include <lib/core/CHIPSafeCasts.h>
+#include <lib/support/CodeUtils.h>
+#include <lib/support/DLLUtil.h>
 #include <protocols/Protocols.h>
-#include <support/CodeUtils.h>
-#include <support/DLLUtil.h>
 
 namespace chip {
 namespace Credentials {
 
 using namespace chip::ASN1;
+using namespace chip::Crypto;
 using namespace chip::Protocols;
 
 namespace {
-
-struct ChipDNParams
-{
-    OID AttrOID;
-    uint64_t Value;
-};
 
 enum IsCACert
 {
     kCACert,
     kNotCACert,
 };
-
-constexpr uint8_t kSHA1_Hash_Langth = 20;
 
 CHIP_ERROR EncodeSubjectPublicKeyInfo(const Crypto::P256PublicKey & pubkey, ASN1Writer & writer)
 {
@@ -95,7 +89,7 @@ CHIP_ERROR EncodeAuthorityKeyIdentifierExtension(const Crypto::P256PublicKey & p
         {
             ASN1_START_SEQUENCE
             {
-                uint8_t keyid[kSHA1_Hash_Langth];
+                uint8_t keyid[kSHA1_Hash_Length];
                 ReturnErrorOnFailure(Crypto::Hash_SHA1(pubkey, pubkey.Length(), keyid));
 
                 ReturnErrorOnFailure(
@@ -123,7 +117,7 @@ CHIP_ERROR EncodeSubjectKeyIdentifierExtension(const Crypto::P256PublicKey & pub
 
         ASN1_START_OCTET_STRING_ENCAPSULATED
         {
-            uint8_t keyid[kSHA1_Hash_Langth];
+            uint8_t keyid[kSHA1_Hash_Length];
             ReturnErrorOnFailure(Crypto::Hash_SHA1(pubkey, pubkey.Length(), keyid));
 
             ReturnErrorOnFailure(writer.PutOctetString(keyid, static_cast<uint8_t>(sizeof(keyid))));
@@ -206,8 +200,7 @@ CHIP_ERROR EncodeNOCSpecificExtensions(ASN1Writer & writer)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
 
-    uint16_t keyUsageBits =
-        static_cast<uint16_t>(KeyUsageFlags::kDigitalSignature) | static_cast<uint16_t>(KeyUsageFlags::kKeyEncipherment);
+    uint16_t keyUsageBits = static_cast<uint16_t>(KeyUsageFlags::kDigitalSignature);
 
     ReturnErrorOnFailure(EncodeIsCAExtension(kNotCACert, writer));
     ReturnErrorOnFailure(EncodeKeyUsageExtension(keyUsageBits, writer));
@@ -266,36 +259,6 @@ exit:
     return err;
 }
 
-CHIP_ERROR EncodeChipDNs(ChipDNParams * params, uint8_t numParams, ASN1Writer & writer)
-{
-    CHIP_ERROR err = CHIP_NO_ERROR;
-
-    ASN1_START_SEQUENCE
-    {
-        for (uint8_t i = 0; i < numParams; i++)
-        {
-            ASN1_START_SET
-            {
-                uint8_t chipAttrStr[kChip64bitAttrUTF8Length + 1];
-                snprintf(reinterpret_cast<char *>(chipAttrStr), sizeof(chipAttrStr), ChipLogFormatX64,
-                         ChipLogValueX64(params[i].Value));
-
-                ASN1_START_SEQUENCE
-                {
-                    ASN1_ENCODE_OBJECT_ID(params[i].AttrOID);
-                    ReturnErrorOnFailure(writer.PutString(kASN1UniversalTag_UTF8String, Uint8::to_const_char(chipAttrStr), 16));
-                }
-                ASN1_END_SEQUENCE;
-            }
-            ASN1_END_SET;
-        }
-    }
-    ASN1_END_SEQUENCE;
-
-exit:
-    return err;
-}
-
 CHIP_ERROR EncodeValidity(uint32_t validityStart, uint32_t validityEnd, ASN1Writer & writer)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
@@ -319,7 +282,12 @@ CHIP_ERROR EncodeChipECDSASignature(Crypto::P256ECDSASignature & signature, ASN1
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
 
-    ASN1_START_BIT_STRING_ENCAPSULATED { writer.PutConstructedType(signature, (uint16_t) signature.Length()); }
+    ASN1_START_BIT_STRING_ENCAPSULATED
+    {
+        // Convert RAW signature to DER when generating X509 certs.
+        P256ECDSASignatureSpan raw_sig(signature.Bytes());
+        ReturnErrorOnFailure(ConvertECDSASignatureRawToDER(raw_sig, writer));
+    }
     ASN1_END_ENCAPSULATED;
 
 exit:
@@ -328,16 +296,18 @@ exit:
 
 } // namespace
 
-CHIP_ERROR EncodeTBSCert(const X509CertRequestParams & requestParams, CertificateIssuerLevel issuerLevel, uint64_t subject,
-                         const Crypto::P256PublicKey & subjectPubkey, const Crypto::P256PublicKey & issuerPubkey,
-                         ASN1Writer & writer)
+CHIP_ERROR EncodeTBSCert(const X509CertRequestParams & requestParams, const Crypto::P256PublicKey & subjectPubkey,
+                         const Crypto::P256PublicKey & issuerPubkey, ASN1Writer & writer)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
-    ChipDNParams dnParams[2];
-    uint8_t numDNs = 1;
-    bool isCA      = true;
+    uint8_t certType;
+    bool isCA;
 
     VerifyOrReturnError(requestParams.SerialNumber >= 0, CHIP_ERROR_INVALID_ARGUMENT);
+    VerifyOrReturnError(requestParams.ValidityEnd >= requestParams.ValidityStart, CHIP_ERROR_INVALID_ARGUMENT);
+
+    ReturnErrorOnFailure(requestParams.SubjectDN.GetCertType(certType));
+    isCA = (certType == kCertType_ICA || certType == kCertType_Root);
 
     ASN1_START_SEQUENCE
     {
@@ -354,42 +324,14 @@ CHIP_ERROR EncodeTBSCert(const X509CertRequestParams & requestParams, Certificat
         ASN1_START_SEQUENCE { ASN1_ENCODE_OBJECT_ID(kOID_SigAlgo_ECDSAWithSHA256); }
         ASN1_END_SEQUENCE;
 
-        // Issuer OID depends on if cert is being signed by the root CA
-        if (issuerLevel == kIssuerIsRootCA)
-        {
-            dnParams[0].AttrOID = chip::ASN1::kOID_AttributeType_ChipRootId;
-        }
-        else
-        {
-            dnParams[0].AttrOID = chip::ASN1::kOID_AttributeType_ChipICAId;
-        }
-        dnParams[0].Value = requestParams.Issuer;
-
-        if (requestParams.HasFabricID)
-        {
-            dnParams[1].AttrOID = chip::ASN1::kOID_AttributeType_ChipFabricId;
-            dnParams[1].Value   = requestParams.FabricID;
-            numDNs              = 2;
-        }
-        ReturnErrorOnFailure(EncodeChipDNs(dnParams, numDNs, writer));
+        // issuer Name
+        ReturnErrorOnFailure(requestParams.IssuerDN.EncodeToASN1(writer));
 
         // validity Validity,
         ReturnErrorOnFailure(EncodeValidity(requestParams.ValidityStart, requestParams.ValidityEnd, writer));
 
         // subject Name
-        if (requestParams.HasNodeID)
-        {
-            dnParams[0].AttrOID = chip::ASN1::kOID_AttributeType_ChipNodeId;
-
-            isCA = false;
-        }
-        else if (subjectPubkey != issuerPubkey)
-        {
-            dnParams[0].AttrOID = chip::ASN1::kOID_AttributeType_ChipICAId;
-        }
-        dnParams[0].Value = subject;
-
-        ReturnErrorOnFailure(EncodeChipDNs(dnParams, numDNs, writer));
+        ReturnErrorOnFailure(requestParams.SubjectDN.EncodeToASN1(writer));
 
         ReturnErrorOnFailure(EncodeSubjectPublicKeyInfo(subjectPubkey, writer));
 
@@ -402,25 +344,23 @@ exit:
     return err;
 }
 
-CHIP_ERROR NewChipX509Cert(const X509CertRequestParams & requestParams, CertificateIssuerLevel issuerLevel, uint64_t subject,
-                           const Crypto::P256PublicKey & subjectPubkey, Crypto::P256Keypair & issuerKeypair, uint8_t * x509CertBuf,
-                           uint32_t x509CertBufSize, uint32_t & x509CertLen)
+CHIP_ERROR NewChipX509Cert(const X509CertRequestParams & requestParams, const Crypto::P256PublicKey & subjectPubkey,
+                           Crypto::P256Keypair & issuerKeypair, MutableByteSpan & x509Cert)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
     ASN1Writer writer;
-    writer.Init(x509CertBuf, x509CertBufSize);
+    writer.Init(x509Cert);
 
-    ReturnErrorOnFailure(EncodeTBSCert(requestParams, issuerLevel, subject, subjectPubkey, issuerKeypair.Pubkey(), writer));
-    writer.Finalize();
+    ReturnErrorOnFailure(EncodeTBSCert(requestParams, subjectPubkey, issuerKeypair.Pubkey(), writer));
 
     Crypto::P256ECDSASignature signature;
-    ReturnErrorOnFailure(issuerKeypair.ECDSA_sign_msg(x509CertBuf, writer.GetLengthWritten(), signature));
+    ReturnErrorOnFailure(issuerKeypair.ECDSA_sign_msg(x509Cert.data(), writer.GetLengthWritten(), signature));
 
-    writer.Init(x509CertBuf, x509CertBufSize);
+    writer.Init(x509Cert);
 
     ASN1_START_SEQUENCE
     {
-        ReturnErrorOnFailure(EncodeTBSCert(requestParams, issuerLevel, subject, subjectPubkey, issuerKeypair.Pubkey(), writer));
+        ReturnErrorOnFailure(EncodeTBSCert(requestParams, subjectPubkey, issuerKeypair.Pubkey(), writer));
 
         ASN1_START_SEQUENCE { ASN1_ENCODE_OBJECT_ID(kOID_SigAlgo_ECDSAWithSHA256); }
         ASN1_END_SEQUENCE;
@@ -429,38 +369,51 @@ CHIP_ERROR NewChipX509Cert(const X509CertRequestParams & requestParams, Certific
     }
     ASN1_END_SEQUENCE;
 
-    writer.Finalize();
-    x509CertLen = writer.GetLengthWritten();
+    x509Cert.reduce_size(writer.GetLengthWritten());
 
 exit:
     return err;
 }
 
 DLL_EXPORT CHIP_ERROR NewRootX509Cert(const X509CertRequestParams & requestParams, Crypto::P256Keypair & issuerKeypair,
-                                      uint8_t * x509CertBuf, uint32_t x509CertBufSize, uint32_t & x509CertLen)
+                                      MutableByteSpan & x509Cert)
 {
-    ReturnErrorCodeIf(requestParams.HasNodeID, CHIP_ERROR_INVALID_ARGUMENT);
-    return NewChipX509Cert(requestParams, kIssuerIsRootCA, requestParams.Issuer, issuerKeypair.Pubkey(), issuerKeypair, x509CertBuf,
-                           x509CertBufSize, x509CertLen);
+    uint8_t certType;
+
+    ReturnErrorOnFailure(requestParams.SubjectDN.GetCertType(certType));
+    VerifyOrReturnError(certType == kCertType_Root, CHIP_ERROR_INVALID_ARGUMENT);
+    VerifyOrReturnError(requestParams.SubjectDN.IsEqual(requestParams.IssuerDN), CHIP_ERROR_INVALID_ARGUMENT);
+
+    return NewChipX509Cert(requestParams, issuerKeypair.Pubkey(), issuerKeypair, x509Cert);
 }
 
-DLL_EXPORT CHIP_ERROR NewICAX509Cert(const X509CertRequestParams & requestParams, uint64_t subject,
-                                     const Crypto::P256PublicKey & subjectPubkey, Crypto::P256Keypair & issuerKeypair,
-                                     uint8_t * x509CertBuf, uint32_t x509CertBufSize, uint32_t & x509CertLen)
+DLL_EXPORT CHIP_ERROR NewICAX509Cert(const X509CertRequestParams & requestParams, const Crypto::P256PublicKey & subjectPubkey,
+                                     Crypto::P256Keypair & issuerKeypair, MutableByteSpan & x509Cert)
 {
-    ReturnErrorCodeIf(requestParams.HasNodeID, CHIP_ERROR_INVALID_ARGUMENT);
-    return NewChipX509Cert(requestParams, kIssuerIsRootCA, subject, subjectPubkey, issuerKeypair, x509CertBuf, x509CertBufSize,
-                           x509CertLen);
+    uint8_t certType;
+
+    ReturnErrorOnFailure(requestParams.SubjectDN.GetCertType(certType));
+    VerifyOrReturnError(certType == kCertType_ICA, CHIP_ERROR_INVALID_ARGUMENT);
+
+    ReturnErrorOnFailure(requestParams.IssuerDN.GetCertType(certType));
+    VerifyOrReturnError(certType == kCertType_Root, CHIP_ERROR_INVALID_ARGUMENT);
+
+    return NewChipX509Cert(requestParams, subjectPubkey, issuerKeypair, x509Cert);
 }
 
-DLL_EXPORT CHIP_ERROR NewNodeOperationalX509Cert(const X509CertRequestParams & requestParams, CertificateIssuerLevel issuerLevel,
+DLL_EXPORT CHIP_ERROR NewNodeOperationalX509Cert(const X509CertRequestParams & requestParams,
                                                  const Crypto::P256PublicKey & subjectPubkey, Crypto::P256Keypair & issuerKeypair,
-                                                 uint8_t * x509CertBuf, uint32_t x509CertBufSize, uint32_t & x509CertLen)
+                                                 MutableByteSpan & x509Cert)
 {
-    VerifyOrReturnError(requestParams.HasNodeID, CHIP_ERROR_INVALID_ARGUMENT);
-    VerifyOrReturnError(requestParams.HasFabricID, CHIP_ERROR_INVALID_ARGUMENT);
-    return NewChipX509Cert(requestParams, issuerLevel, requestParams.NodeID, subjectPubkey, issuerKeypair, x509CertBuf,
-                           x509CertBufSize, x509CertLen);
+    uint8_t certType;
+
+    ReturnErrorOnFailure(requestParams.SubjectDN.GetCertType(certType));
+    VerifyOrReturnError(certType == kCertType_Node, CHIP_ERROR_INVALID_ARGUMENT);
+
+    ReturnErrorOnFailure(requestParams.IssuerDN.GetCertType(certType));
+    VerifyOrReturnError(certType == kCertType_ICA || certType == kCertType_Root, CHIP_ERROR_INVALID_ARGUMENT);
+
+    return NewChipX509Cert(requestParams, subjectPubkey, issuerKeypair, x509Cert);
 }
 
 } // namespace Credentials

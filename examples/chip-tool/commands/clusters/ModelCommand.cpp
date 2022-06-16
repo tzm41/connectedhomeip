@@ -23,53 +23,51 @@
 
 using namespace ::chip;
 
-namespace {
-constexpr uint16_t kWaitDurationInSeconds = 10;
-} // namespace
-
-void DispatchSingleClusterCommand(chip::ClusterId aClusterId, chip::CommandId aCommandId, chip::EndpointId aEndPointId,
-                                  chip::TLV::TLVReader & aReader, Command * apCommandObj)
+CHIP_ERROR ModelCommand::RunCommand()
 {
-    ChipLogDetail(Controller, "Received Cluster Command: Cluster=%" PRIx16 " Command=%" PRIx8 " Endpoint=%" PRIx8, aClusterId,
-                  aCommandId, aEndPointId);
-    ChipLogError(
-        Controller,
-        "Default DispatchSingleClusterCommand is called, this should be replaced by actual dispatched for cluster commands");
+
+    if (IsGroupId(mDestinationId))
+    {
+        FabricIndex fabricIndex;
+        ReturnErrorOnFailure(CurrentCommissioner().GetFabricIndex(&fabricIndex));
+        ChipLogProgress(chipTool, "Sending command to group 0x%x", GroupIdFromNodeId(mDestinationId));
+
+        return SendGroupCommand(GroupIdFromNodeId(mDestinationId), fabricIndex);
+    }
+
+    ChipLogProgress(chipTool, "Sending command to node 0x%" PRIx64, mDestinationId);
+
+    CommissioneeDeviceProxy * commissioneeDeviceProxy = nullptr;
+    if (CHIP_NO_ERROR == CurrentCommissioner().GetDeviceBeingCommissioned(mDestinationId, &commissioneeDeviceProxy))
+    {
+        return SendCommand(commissioneeDeviceProxy, mEndPointId);
+    }
+
+    return CurrentCommissioner().GetConnectedDevice(mDestinationId, &mOnDeviceConnectedCallback,
+                                                    &mOnDeviceConnectionFailureCallback);
 }
 
-CHIP_ERROR ModelCommand::Run(PersistentStorage & storage, NodeId localId, NodeId remoteId)
+void ModelCommand::OnDeviceConnectedFn(void * context, chip::OperationalDeviceProxy * device)
 {
-    CHIP_ERROR err = CHIP_NO_ERROR;
+    ModelCommand * command = reinterpret_cast<ModelCommand *>(context);
+    VerifyOrReturn(command != nullptr, ChipLogError(chipTool, "OnDeviceConnectedFn: context is null"));
 
-    chip::Controller::CommissionerInitParams initParams;
-    initParams.storageDelegate = &storage;
+    CHIP_ERROR err = command->SendCommand(device, command->mEndPointId);
+    VerifyOrReturn(CHIP_NO_ERROR == err, command->SetCommandExitStatus(err));
+}
 
-    err = mOpCredsIssuer.Initialize(storage);
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init failure! Operational Cred Issuer: %s", ErrorStr(err)));
+void ModelCommand::OnDeviceConnectionFailureFn(void * context, PeerId peerId, CHIP_ERROR err)
+{
+    LogErrorOnFailure(err);
 
-    initParams.operationalCredentialsDelegate = &mOpCredsIssuer;
+    ModelCommand * command = reinterpret_cast<ModelCommand *>(context);
+    VerifyOrReturn(command != nullptr, ChipLogError(chipTool, "OnDeviceConnectionFailureFn: context is null"));
+    command->SetCommandExitStatus(err);
+}
 
-    err = mCommissioner.SetUdpListenPort(storage.GetListenPort());
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init failure! Commissioner: %s", ErrorStr(err)));
-
-    err = mCommissioner.Init(localId, initParams);
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init failure! Commissioner: %s", ErrorStr(err)));
-
-    err = mCommissioner.ServiceEvents();
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init failure! Run Loop: %s", ErrorStr(err)));
-
-    err = mCommissioner.GetDevice(remoteId, &mDevice);
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(chipTool, "Init failure! No pairing for device: %" PRIu64, localId));
-
-    UpdateWaitForResponse(true);
-    err = SendCommand(mDevice, mEndPointId);
-    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(chipTool, "Failed to send message: %s", ErrorStr(err)));
-    WaitForResponse(kWaitDurationInSeconds);
-
-    VerifyOrExit(GetCommandExitStatus(), err = CHIP_ERROR_INTERNAL);
-
-exit:
-    mCommissioner.ServiceEventSignal();
-    mCommissioner.Shutdown();
-    return err;
+void ModelCommand::Shutdown()
+{
+    ResetArguments();
+    mOnDeviceConnectedCallback.Cancel();
+    mOnDeviceConnectionFailureCallback.Cancel();
 }

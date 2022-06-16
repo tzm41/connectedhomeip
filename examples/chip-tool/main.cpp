@@ -17,28 +17,33 @@
  */
 
 #include "commands/common/Commands.h"
+#include "commands/example/ExampleCredentialIssuerCommands.h"
 
-#include "commands/clusters/Commands.h"
 #include "commands/discover/Commands.h"
+#include "commands/group/Commands.h"
+#include "commands/interactive/Commands.h"
 #include "commands/pairing/Commands.h"
 #include "commands/payload/Commands.h"
-#include "commands/reporting/Commands.h"
-#include "commands/tests/Commands.h"
+#include "commands/storage/Commands.h"
 
-#include <protocols/secure_channel/PASESession.h>
+#include <zap-generated/cluster/Commands.h>
+#include <zap-generated/test/Commands.h>
 
 // ================================================================================
 // Main Code
 // ================================================================================
 int main(int argc, char * argv[])
 {
+    ExampleCredentialIssuerCommands credIssuerCommands;
     Commands commands;
-    registerCommandsDiscover(commands);
+    registerCommandsDiscover(commands, &credIssuerCommands);
+    registerCommandsInteractive(commands, &credIssuerCommands);
     registerCommandsPayload(commands);
-    registerCommandsPairing(commands);
-    registerCommandsReporting(commands);
-    registerCommandsTests(commands);
-    registerClusters(commands);
+    registerCommandsPairing(commands, &credIssuerCommands);
+    registerCommandsTests(commands, &credIssuerCommands);
+    registerCommandsGroup(commands, &credIssuerCommands);
+    registerClusters(commands, &credIssuerCommands);
+    registerCommandsStorage(commands);
 
-    return commands.Run(chip::kTestControllerNodeId, chip::kTestDeviceNodeId, argc, argv);
+    return commands.Run(argc, argv);
 }

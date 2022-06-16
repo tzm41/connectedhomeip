@@ -50,10 +50,10 @@ RUN set -x \
     ninja-build \
     openjdk-8-jdk \
     pkg-config \
-    python3 \
-    python3-dev \
-    python3-pip \
-    python3-venv \
+    python3.9 \
+    python3.9-dev \
+    python3.9-venv \
+    rsync \
     shellcheck \
     strace \
     systemd \
@@ -73,20 +73,20 @@ RUN set -x \
     && exec bash \
     && : # last line
 
-# Python 2 and PIP
+# Python 3.9 and PIP
 RUN set -x \
-    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive  apt-get update \
+    && DEBIAN_FRONTEND=noninteractive  apt-get install -y libgirepository1.0-dev \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common \
     && add-apt-repository universe \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y python python2 \
-    && curl https://bootstrap.pypa.io/pip/2.7/get-pip.py --output get-pip.py \
-    && python2 get-pip.py \
+    && curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py \
+    && python3.9 get-pip.py \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 1 \
     && rm -rf /var/lib/apt/lists/ \
     && : # last line
 
 RUN set -x \
-    && pip3 install circleci attrs coloredlogs PyGithub pygit future \
-    portpicker mobly                                                 \
+    && pip3 install attrs coloredlogs PyGithub pygit future portpicker mobly click cxxfilt ghapi pandas tabulate \
     && : # last line
 
 # build and install gn
@@ -114,13 +114,14 @@ RUN set -x \
 
 # NodeJS: install a newer version than what apt-get would read
 # This installs the latest LTS version of nodejs
+ENV CHIP_NODE_VERSION=v16.13.2
 RUN set -x \
     && mkdir node_js \
     && cd node_js \
-    && wget https://nodejs.org/dist/v12.19.0/node-v12.19.0-linux-x64.tar.xz \
-    && tar xfvJ node-v12.19.0-linux-x64.tar.xz \
-    && mv node-v12.19.0-linux-x64 /opt/ \
-    && ln -s /opt/node-v12.19.0-linux-x64 /opt/node \
+    && wget https://nodejs.org/dist/$CHIP_NODE_VERSION/node-$CHIP_NODE_VERSION-linux-x64.tar.xz \
+    && tar xfvJ node-$CHIP_NODE_VERSION-linux-x64.tar.xz \
+    && mv node-$CHIP_NODE_VERSION-linux-x64 /opt/ \
+    && ln -s /opt/node-$CHIP_NODE_VERSION-linux-x64 /opt/node \
     && ln -s /opt/node/bin/* /usr/bin \
     && cd .. \
     && rm -rf node_js \

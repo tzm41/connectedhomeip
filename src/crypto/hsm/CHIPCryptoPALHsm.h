@@ -20,10 +20,10 @@
  *      Header that exposes the platform agnostic CHIP crypto primitives
  */
 
-#ifndef _CHIP_CRYPTO_PAL_HSM_H_
-#define _CHIP_CRYPTO_PAL_HSM_H_
+#pragma once
 
 #include "CHIPCryptoPALHsm_config.h"
+#include <lib/core/DataModelTypes.h>
 
 #if CHIP_CRYPTO_HSM_NXP
 #include <fsl_sss_se05x_apis.h>
@@ -90,6 +90,16 @@ public:
     operator uint8_t *() override { return bytes; }
     operator const uint8_t *() const override { return bytes; }
 
+    const uint8_t * ConstBytes() const override { return &bytes[0]; }
+    uint8_t * Bytes() override { return &bytes[0]; }
+    bool IsUncompressed() const override
+    {
+        constexpr uint8_t kUncompressedPointMarker = 0x04;
+        // SEC1 definition of an uncompressed point is (0x04 || X || Y) where X and Y are
+        // raw zero-padded big-endian large integers of the group size.
+        return (Length() == ((kP256_FE_Length * 2) + 1)) && (ConstBytes()[0] == kUncompressedPointMarker);
+    }
+
     void SetPublicKeyId(uint32_t id) { PublicKeyid = id; }
 
     CHIP_ERROR ECDSA_validate_msg_signature(const uint8_t * msg, size_t msg_length,
@@ -116,7 +126,7 @@ public:
 
     virtual CHIP_ERROR Initialize() override;
 
-    virtual CHIP_ERROR Serialize(P256SerializedKeypair & output) override;
+    virtual CHIP_ERROR Serialize(P256SerializedKeypair & output) const override;
 
     virtual CHIP_ERROR Deserialize(P256SerializedKeypair & input) override;
 
@@ -127,6 +137,8 @@ public:
     virtual CHIP_ERROR ECDH_derive_secret(const P256PublicKey & remote_public_key,
                                           P256ECDHDerivedSecret & out_secret) const override;
 
+    CHIP_ERROR NewCertificateSigningRequest(uint8_t * csr, size_t & csr_length) override;
+
     const P256PublicKeyHSM & Pubkey() const override { return mPublicKeyHSM; }
 
     bool provisioned_key;
@@ -134,6 +146,8 @@ public:
     void SetKeyId(uint32_t id) { keyid = id; }
 
     uint32_t GetKeyId(void) { return keyid; }
+
+    CHIP_ERROR CreateOperationalKey(FabricIndex fabricIdx);
 
 private:
     uint32_t keyid;
@@ -175,17 +189,28 @@ public:
                                    const size_t salt_length, const uint8_t * info, const size_t info_length, uint8_t * out_buffer,
                                    size_t out_length) override;
 
-    void SetKeyId(uint32_t id) { keyid = id; }
-
-    uint32_t GetKeyId() { return keyid; }
-
 private:
     uint32_t keyid;
 };
 
 #endif //#if ENABLE_HSM_HKDF_SHA256
 
+#if ENABLE_HSM_HMAC_SHA256
+
+class HMAC_shaHSM : public HMAC_sha
+{
+public:
+    HMAC_shaHSM();
+    ~HMAC_shaHSM();
+
+    virtual CHIP_ERROR HMAC_SHA256(const uint8_t * key, size_t key_length, const uint8_t * message, size_t message_length,
+                                   uint8_t * out_buffer, size_t out_length) override;
+
+private:
+    uint32_t keyid;
+};
+
+#endif //#if ENABLE_HSM_HMAC_SHA256
+
 } // namespace Crypto
 } // namespace chip
-
-#endif //#ifndef _CHIP_CRYPTO_PAL_HSM_H_

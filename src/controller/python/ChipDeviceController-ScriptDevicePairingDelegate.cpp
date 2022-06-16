@@ -18,6 +18,7 @@
  */
 
 #include "ChipDeviceController-ScriptDevicePairingDelegate.h"
+#include "lib/support/TypeTraits.h"
 
 namespace chip {
 namespace Controller {
@@ -27,11 +28,65 @@ void ScriptDevicePairingDelegate::SetKeyExchangeCallback(DevicePairingDelegate_O
     mOnPairingCompleteCallback = callback;
 }
 
+void ScriptDevicePairingDelegate::SetCommissioningCompleteCallback(DevicePairingDelegate_OnCommissioningCompleteFunct callback)
+{
+    mOnCommissioningCompleteCallback = callback;
+}
+
+void ScriptDevicePairingDelegate::SetCommissioningSuccessCallback(DevicePairingDelegate_OnCommissioningSuccessFunct callback)
+{
+    mOnCommissioningSuccessCallback = callback;
+}
+
+void ScriptDevicePairingDelegate::SetCommissioningFailureCallback(DevicePairingDelegate_OnCommissioningFailureFunct callback)
+{
+    mOnCommissioningFailureCallback = callback;
+}
+
+void ScriptDevicePairingDelegate::SetCommissioningStatusUpdateCallback(
+    DevicePairingDelegate_OnCommissioningStatusUpdateFunct callback)
+{
+    mOnCommissioningStatusUpdateCallback = callback;
+}
+
 void ScriptDevicePairingDelegate::OnPairingComplete(CHIP_ERROR error)
 {
     if (mOnPairingCompleteCallback != nullptr)
     {
-        mOnPairingCompleteCallback(error);
+        mOnPairingCompleteCallback(error.AsInteger());
+    }
+}
+
+void ScriptDevicePairingDelegate::OnCommissioningComplete(NodeId nodeId, CHIP_ERROR error)
+{
+    if (mOnCommissioningCompleteCallback != nullptr)
+    {
+        mOnCommissioningCompleteCallback(nodeId, error.AsInteger());
+    }
+}
+
+void ScriptDevicePairingDelegate::OnCommissioningSuccess(PeerId peerId)
+{
+    if (mOnCommissioningSuccessCallback != nullptr)
+    {
+        mOnCommissioningSuccessCallback(peerId);
+    }
+}
+
+void ScriptDevicePairingDelegate::OnCommissioningFailure(PeerId peerId, CHIP_ERROR error, CommissioningStage stageFailed,
+                                                         Optional<Credentials::AttestationVerificationResult> additionalErrorInfo)
+{
+    if (mOnCommissioningFailureCallback != nullptr)
+    {
+        mOnCommissioningFailureCallback(peerId, error, stageFailed, additionalErrorInfo);
+    }
+}
+
+void ScriptDevicePairingDelegate::OnCommissioningStatusUpdate(PeerId peerId, CommissioningStage stageCompleted, CHIP_ERROR error)
+{
+    if (mOnCommissioningStatusUpdateCallback != nullptr)
+    {
+        mOnCommissioningStatusUpdateCallback(peerId, stageCompleted, error);
     }
 }
 

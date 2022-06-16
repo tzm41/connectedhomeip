@@ -16,53 +16,67 @@
  *    limitations under the License.
  */
 
-#include <support/logging/CHIPLogging.h>
-
 #include "AppTask.h"
 #include "BoltLockManager.h"
 
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/util/af-types.h>
-#include <app/util/af.h>
+#include <app-common/zap-generated/attributes/Accessors.h>
+#include <app-common/zap-generated/ids/Clusters.h>
+#include <app/ConcreteAttributePath.h>
+#include <app/clusters/door-lock-server/door-lock-server.h>
+#include <lib/support/CodeUtils.h>
 
 using namespace ::chip;
+using namespace ::chip::app::Clusters;
+using namespace ::chip::app::Clusters::DoorLock;
 
-void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId, AttributeId attributeId, uint8_t mask,
-                                        uint16_t manufacturerCode, uint8_t type, uint16_t size, uint8_t * value)
+LOG_MODULE_DECLARE(app, CONFIG_MATTER_LOG_LEVEL);
+
+void MatterPostAttributeChangeCallback(const chip::app::ConcreteAttributePath & attributePath, uint8_t type, uint16_t size,
+                                       uint8_t * value)
 {
-    if (clusterId != ZCL_ON_OFF_CLUSTER_ID)
-    {
-        ChipLogProgress(Zcl, "Unknown cluster ID: %d", clusterId);
-        return;
-    }
+    VerifyOrReturn(attributePath.mClusterId == DoorLock::Id && attributePath.mAttributeId == DoorLock::Attributes::LockState::Id);
 
-    if (attributeId != ZCL_ON_OFF_ATTRIBUTE_ID)
+    switch (*value)
     {
-        ChipLogProgress(Zcl, "Unknown attribute ID: %d", attributeId);
-        return;
+    case to_underlying(DlLockState::kLocked):
+        BoltLockMgr().Lock(BoltLockManager::OperationSource::kRemote);
+        break;
+    case to_underlying(DlLockState::kUnlocked):
+        BoltLockMgr().Unlock(BoltLockManager::OperationSource::kRemote);
+        break;
+    default:
+        break;
     }
-
-    BoltLockMgr().InitiateAction(0, *value ? BoltLockManager::LOCK_ACTION : BoltLockManager::UNLOCK_ACTION);
 }
 
-/** @brief OnOff Cluster Init
- *
- * This function is called when a specific cluster is initialized. It gives the
- * application an opportunity to take care of cluster initialization procedures.
- * It is called exactly once for each endpoint where cluster is present.
- *
- * @param endpoint   Ver.: always
- *
- * TODO Issue #3841
- * emberAfOnOffClusterInitCallback happens before the stack initialize the cluster
- * attributes to the default value.
- * The logic here expects something similar to the deprecated Plugins callback
- * emberAfPluginOnOffClusterServerPostInitCallback.
- *
- */
-void emberAfOnOffClusterInitCallback(EndpointId endpoint)
+bool emberAfPluginDoorLockOnDoorLockCommand(chip::EndpointId endpointId, const Optional<ByteSpan> & pinCode, DlOperationError & err)
 {
-    GetAppTask().UpdateClusterState();
+    return true;
+}
+
+bool emberAfPluginDoorLockOnDoorUnlockCommand(chip::EndpointId endpointId, const Optional<ByteSpan> & pinCode,
+                                              DlOperationError & err)
+{
+    return true;
+}
+
+void emberAfDoorLockClusterInitCallback(EndpointId endpoint)
+{
+    DoorLockServer::Instance().InitServer(endpoint);
+
+    EmberAfStatus status = DoorLock::Attributes::LockType::Set(endpoint, DlLockType::kDeadBolt);
+    if (status != EMBER_ZCL_STATUS_SUCCESS)
+    {
+        LOG_ERR("Updating type %x", status);
+    }
+
+    // Set FeatureMap to 0, default is:
+    // (kUsersManagement|kAccessSchedules|kRFIDCredentials|kPINCredentials) 0x113
+    status = DoorLock::Attributes::FeatureMap::Set(endpoint, 0);
+    if (status != EMBER_ZCL_STATUS_SUCCESS)
+    {
+        LOG_ERR("Updating feature map %x", status);
+    }
+
+    GetAppTask().UpdateClusterState(BoltLockMgr().GetState(), BoltLockManager::OperationSource::kUnspecified);
 }

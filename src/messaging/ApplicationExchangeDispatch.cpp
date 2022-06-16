@@ -26,47 +26,30 @@
 namespace chip {
 namespace Messaging {
 
-CHIP_ERROR ApplicationExchangeDispatch::SendMessageImpl(SecureSessionHandle session, PayloadHeader & payloadHeader,
-                                                        System::PacketBufferHandle && message,
-                                                        EncryptedPacketBufferHandle * retainedMessage)
-{
-    return mSessionMgr->SendMessage(session, payloadHeader, std::move(message), retainedMessage);
-}
-
-CHIP_ERROR ApplicationExchangeDispatch::ResendMessage(SecureSessionHandle session, EncryptedPacketBufferHandle && message,
-                                                      EncryptedPacketBufferHandle * retainedMessage) const
-{
-    return mSessionMgr->SendEncryptedMessage(session, std::move(message), retainedMessage);
-}
-
-bool ApplicationExchangeDispatch::MessagePermitted(uint16_t protocol, uint8_t type)
+bool ApplicationExchangeDispatch::MessagePermitted(Protocols::Id protocol, uint8_t type)
 {
     // TODO: Change this check to only include the protocol and message types that are allowed
-    switch (protocol)
+    if (protocol == Protocols::SecureChannel::Id)
     {
-    case Protocols::SecureChannel::Id.GetProtocolId():
         switch (type)
         {
         case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PBKDFParamRequest):
         case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PBKDFParamResponse):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Spake2p1):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Spake2p2):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Spake2p3):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Spake2pError):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_SigmaR1):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_SigmaR2):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_SigmaR3):
-        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_SigmaErr):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Pake1):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Pake2):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_Pake3):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::PASE_PakeError):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_Sigma1):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_Sigma2):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_Sigma3):
+        case static_cast<uint8_t>(Protocols::SecureChannel::MsgType::CASE_Sigma2Resume):
             return false;
 
         default:
             break;
         }
-        break;
-
-    default:
-        break;
     }
+
     return true;
 }
 

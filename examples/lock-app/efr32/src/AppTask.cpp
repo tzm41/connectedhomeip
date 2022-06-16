@@ -20,24 +20,38 @@
 #include "AppTask.h"
 #include "AppConfig.h"
 #include "AppEvent.h"
-#include "ButtonHandler.h"
 #include "LEDWidget.h"
-#include "Service.h"
+#ifdef DISPLAY_ENABLED
 #include "lcd.h"
+#ifdef QR_CODE_ENABLED
 #include "qrcodegen.h"
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/attribute-type.h>
-#include <app/common/gen/cluster-id.h>
+#endif // QR_CODE_ENABLED
+#endif // DISPLAY_ENABLED
+#include "sl_simple_led_instances.h"
+#include <app-common/zap-generated/af-structs.h>
+#include <app-common/zap-generated/attribute-id.h>
+#include <app-common/zap-generated/attribute-type.h>
+#include <app-common/zap-generated/attributes/Accessors.h>
+#include <app-common/zap-generated/cluster-id.h>
+#include <app-common/zap-generated/cluster-objects.h>
+
+#include <app/clusters/door-lock-server/door-lock-server.h>
+#include <app/clusters/identify-server/identify-server.h>
 #include <app/server/OnboardingCodesUtil.h>
 #include <app/server/Server.h>
 #include <app/util/attribute-storage.h>
 
 #include <assert.h>
 
-#include <lib/support/CodeUtils.h>
+#include <credentials/DeviceAttestationCredsProvider.h>
+#include <credentials/examples/DeviceAttestationCredsExample.h>
 
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
 #include <setup_payload/SetupPayload.h>
+
+#include <platform/EFR32/freertos_bluetooth.h>
+
+#include <lib/support/CodeUtils.h>
 
 #include <platform/CHIPDeviceLayer.h>
 #if CHIP_ENABLE_OPENTHREAD
@@ -45,12 +59,30 @@
 #include <platform/OpenThread/OpenThreadUtils.h>
 #include <platform/ThreadStackManager.h>
 #endif
+#ifdef SL_WIFI
+#include "wfx_host_events.h"
+#include <app/clusters/network-commissioning/network-commissioning.h>
+#include <platform/EFR32/NetworkCommissioningWiFiDriver.h>
+#endif /* SL_WIFI */
 
 #define FACTORY_RESET_TRIGGER_TIMEOUT 3000
 #define FACTORY_RESET_CANCEL_WINDOW_TIMEOUT 3000
-#define APP_TASK_STACK_SIZE (1536)
+#define APP_TASK_STACK_SIZE (4096)
 #define APP_TASK_PRIORITY 2
 #define APP_EVENT_QUEUE_SIZE 10
+
+#define SYSTEM_STATE_LED &sl_led_led0
+#define LOCK_STATE_LED &sl_led_led1
+#define APP_FUNCTION_BUTTON &sl_button_btn0
+#define APP_LOCK_SWITCH &sl_button_btn1
+
+using chip::app::Clusters::DoorLock::DlLockState;
+using chip::app::Clusters::DoorLock::DlOperationError;
+using chip::app::Clusters::DoorLock::DlOperationSource;
+
+using namespace chip;
+using namespace ::chip::DeviceLayer;
+using namespace ::chip::DeviceLayer::Internal;
 
 namespace {
 TimerHandle_t sFunctionTimer; // FreeRTOS app sw timer.
@@ -61,50 +93,127 @@ QueueHandle_t sAppEventQueue;
 LEDWidget sStatusLED;
 LEDWidget sLockLED;
 
-bool sIsThreadProvisioned     = false;
-bool sIsThreadEnabled         = false;
-bool sHaveBLEConnections      = false;
-bool sHaveServiceConnectivity = false;
+#ifdef SL_WIFI
+bool sIsWiFiProvisioned = false;
+bool sIsWiFiEnabled     = false;
+bool sIsWiFiAttached    = false;
+
+app::Clusters::NetworkCommissioning::Instance
+    sWiFiNetworkCommissioningInstance(0 /* Endpoint Id */, &(NetworkCommissioning::SlWiFiDriver::GetInstance()));
+#endif /* SL_WIFI */
+
+#if CHIP_ENABLE_OPENTHREAD
+bool sIsThreadProvisioned = false;
+bool sIsThreadEnabled     = false;
+#endif /* CHIP_ENABLE_OPENTHREAD */
+bool sHaveBLEConnections = false;
+bool configValueSet      = false;
+
+EmberAfIdentifyEffectIdentifier sIdentifyEffect = EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_STOP_EFFECT;
+
+uint8_t sAppEventQueueBuffer[APP_EVENT_QUEUE_SIZE * sizeof(AppEvent)];
+StaticQueue_t sAppEventQueueStruct;
 
 StackType_t appStack[APP_TASK_STACK_SIZE / sizeof(StackType_t)];
 StaticTask_t appTaskStruct;
+
+/**********************************************************
+ * Identify Callbacks
+ *********************************************************/
+
+namespace {
+void OnTriggerIdentifyEffectCompleted(chip::System::Layer * systemLayer, void * appState)
+{
+    sIdentifyEffect = EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_STOP_EFFECT;
+}
+} // namespace
+
+void OnTriggerIdentifyEffect(Identify * identify)
+{
+    sIdentifyEffect = identify->mCurrentEffectIdentifier;
+
+    if (identify->mCurrentEffectIdentifier == EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_CHANNEL_CHANGE)
+    {
+        ChipLogProgress(Zcl, "IDENTIFY_EFFECT_IDENTIFIER_CHANNEL_CHANGE - Not supported, use effect varriant %d",
+                        identify->mEffectVariant);
+        sIdentifyEffect = static_cast<EmberAfIdentifyEffectIdentifier>(identify->mEffectVariant);
+    }
+
+    switch (sIdentifyEffect)
+    {
+    case EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_BLINK:
+    case EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_BREATHE:
+    case EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_OKAY:
+        (void) chip::DeviceLayer::SystemLayer().StartTimer(chip::System::Clock::Seconds16(5), OnTriggerIdentifyEffectCompleted,
+                                                           identify);
+        break;
+    case EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_FINISH_EFFECT:
+        (void) chip::DeviceLayer::SystemLayer().CancelTimer(OnTriggerIdentifyEffectCompleted, identify);
+        (void) chip::DeviceLayer::SystemLayer().StartTimer(chip::System::Clock::Seconds16(1), OnTriggerIdentifyEffectCompleted,
+                                                           identify);
+        break;
+    case EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_STOP_EFFECT:
+        (void) chip::DeviceLayer::SystemLayer().CancelTimer(OnTriggerIdentifyEffectCompleted, identify);
+        sIdentifyEffect = EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_STOP_EFFECT;
+        break;
+    default:
+        ChipLogProgress(Zcl, "No identifier effect");
+    }
+}
+
+Identify gIdentify = {
+    chip::EndpointId{ 1 },
+    [](Identify *) { ChipLogProgress(Zcl, "onIdentifyStart"); },
+    [](Identify *) { ChipLogProgress(Zcl, "onIdentifyStop"); },
+    EMBER_ZCL_IDENTIFY_IDENTIFY_TYPE_VISIBLE_LED,
+    OnTriggerIdentifyEffect,
+};
+
 } // namespace
 
 using namespace chip::TLV;
+using namespace ::chip::Credentials;
 using namespace ::chip::DeviceLayer;
 
 AppTask AppTask::sAppTask;
 
-int AppTask::StartAppTask()
+CHIP_ERROR AppTask::StartAppTask()
 {
-    int err = CHIP_ERROR_MAX;
-
-    sAppEventQueue = xQueueCreate(APP_EVENT_QUEUE_SIZE, sizeof(AppEvent));
+    sAppEventQueue = xQueueCreateStatic(APP_EVENT_QUEUE_SIZE, sizeof(AppEvent), sAppEventQueueBuffer, &sAppEventQueueStruct);
     if (sAppEventQueue == NULL)
     {
         EFR32_LOG("Failed to allocate app event queue");
-        appError(err);
+        appError(APP_ERROR_EVENT_QUEUE_FAILED);
     }
 
     // Start App task.
     sAppTaskHandle = xTaskCreateStatic(AppTaskMain, APP_TASK_NAME, ArraySize(appStack), NULL, 1, appStack, &appTaskStruct);
-    if (sAppTaskHandle != NULL)
-    {
-        err = CHIP_NO_ERROR;
-    }
-
-    return err;
+    return (sAppTaskHandle == nullptr) ? APP_ERROR_CREATE_TASK_FAILED : CHIP_NO_ERROR;
 }
 
-int AppTask::Init()
+CHIP_ERROR AppTask::Init()
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
 
-    // Init ZCL Data Model
-    InitServer();
+#ifdef SL_WIFI
+    /*
+     * Wait for the WiFi to be initialized
+     */
+    EFR32_LOG("APP: Wait WiFi Init");
+    while (!wfx_hw_ready())
+    {
+        vTaskDelay(10);
+    }
+    EFR32_LOG("APP: Done WiFi Init");
+    /* We will init server when we get IP */
 
-    // Initialise WSTK buttons PB0 and PB1 (including debounce).
-    ButtonHandler::Init();
+    sWiFiNetworkCommissioningInstance.Init();
+#endif
+
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    // Initialize device attestation config
+    SetDeviceAttestationCredentialsProvider(Examples::GetExampleDACProvider());
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     // Create FreeRTOS sw timer for Function Selection.
     sFunctionTimer = xTimerCreate("FnTmr",          // Just a text name, not used by the RTOS kernel
@@ -116,36 +225,73 @@ int AppTask::Init()
     if (sFunctionTimer == NULL)
     {
         EFR32_LOG("funct timer create failed");
-        appError(err);
+        appError(APP_ERROR_CREATE_TIMER_FAILED);
     }
 
-    EFR32_LOG("Current Firmware Version: %s", CHIP_DEVICE_CONFIG_DEVICE_FIRMWARE_REVISION_STRING);
-    err = BoltLockMgr().Init();
+    EFR32_LOG("Current Software Version: %s", CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING);
+
+    // Initial lock state
+    chip::app::DataModel::Nullable<chip::app::Clusters::DoorLock::DlLockState> state;
+    chip::EndpointId endpointId{ 1 };
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    chip::app::Clusters::DoorLock::Attributes::LockState::Get(endpointId, state);
+
+    uint8_t maxCredentialsPerUser = 0;
+    if (!DoorLockServer::Instance().GetNumberOfCredentialsSupportedPerUser(endpointId, maxCredentialsPerUser))
+    {
+        ChipLogError(Zcl,
+                     "Unable to get number of credentials supported per user when initializing lock endpoint, defaulting to 5 "
+                     "[endpointId=%d]",
+                     endpointId);
+        maxCredentialsPerUser = 5;
+    }
+
+    uint16_t numberOfSupportedUsers = 0;
+    if (!DoorLockServer::Instance().GetNumberOfUserSupported(endpointId, numberOfSupportedUsers))
+    {
+        ChipLogError(Zcl,
+                     "Unable to get number of supported users when initializing lock endpoint, defaulting to 10 [endpointId=%d]",
+                     endpointId);
+        numberOfSupportedUsers = 10;
+    }
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    err = LockMgr().Init(state, maxCredentialsPerUser, numberOfSupportedUsers);
     if (err != CHIP_NO_ERROR)
     {
-        EFR32_LOG("BoltLockMgr().Init() failed");
+        EFR32_LOG("LockMgr().Init() failed");
         appError(err);
     }
 
-    BoltLockMgr().SetCallbacks(ActionInitiated, ActionCompleted);
+    LockMgr().SetCallbacks(ActionInitiated, ActionCompleted);
 
     // Initialize LEDs
     LEDWidget::InitGpio();
     sStatusLED.Init(SYSTEM_STATE_LED);
-
     sLockLED.Init(LOCK_STATE_LED);
-    sLockLED.Set(!BoltLockMgr().IsUnlocked());
-    UpdateClusterState();
+
+    if (state.Value() == DlLockState::kUnlocked)
+    {
+        sLockLED.Set(true);
+    }
+    else
+    {
+        sLockLED.Set(false);
+    }
+
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(UpdateClusterState, reinterpret_cast<intptr_t>(nullptr));
 
     ConfigurationMgr().LogDeviceConfig();
 
-    // Print setup info on LCD if available
-#ifdef DISPLAY_ENABLED
-    std::string QRCode;
+// Print setup info on LCD if available
+#ifdef QR_CODE_ENABLED
+    // Create buffer for QR code that can fit max size and null terminator.
+    char qrCodeBuffer[chip::QRCodeBasicSetupPayloadGenerator::kMaxQRCodeBase38RepresentationLength + 1];
+    chip::MutableCharSpan QRCode(qrCodeBuffer);
 
     if (GetQRCode(QRCode, chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE)) == CHIP_NO_ERROR)
     {
-        LCDWriteQRCode((uint8_t *) QRCode.c_str());
+        LCDWriteQRCode((uint8_t *) QRCode.data());
     }
     else
     {
@@ -153,18 +299,16 @@ int AppTask::Init()
     }
 #else
     PrintOnboardingCodes(chip::RendezvousInformationFlag(chip::RendezvousInformationFlag::kBLE));
-#endif
+#endif // QR_CODE_ENABLED
 
     return err;
 }
 
 void AppTask::AppTaskMain(void * pvParameter)
 {
-    int err;
     AppEvent event;
-    uint64_t mLastChangeTimeUS = 0;
 
-    err = sAppTask.Init();
+    CHIP_ERROR err = sAppTask.Init();
     if (err != CHIP_NO_ERROR)
     {
         EFR32_LOG("AppTask.Init() failed");
@@ -172,10 +316,16 @@ void AppTask::AppTaskMain(void * pvParameter)
     }
 
     EFR32_LOG("App Task started");
-    SetDeviceName("EFR32LockDemo._chip._udp.local.");
 
     while (true)
     {
+        // Users and credentials should be checked once from nvm flash on boot
+        if (!configValueSet)
+        {
+            LockMgr().ReadConfigValues();
+            configValueSet = true;
+        }
+
         BaseType_t eventReceived = xQueueReceive(sAppEventQueue, &event, pdMS_TO_TICKS(10));
         while (eventReceived == pdTRUE)
         {
@@ -190,10 +340,16 @@ void AppTask::AppTaskMain(void * pvParameter)
         // when the CHIP task is busy (e.g. with a long crypto operation).
         if (PlatformMgr().TryLockChipStack())
         {
-            sIsThreadProvisioned     = ConnectivityMgr().IsThreadProvisioned();
-            sIsThreadEnabled         = ConnectivityMgr().IsThreadEnabled();
-            sHaveBLEConnections      = (ConnectivityMgr().NumBLEConnections() != 0);
-            sHaveServiceConnectivity = ConnectivityMgr().HaveServiceConnectivity();
+#ifdef SL_WIFI
+            sIsWiFiProvisioned = ConnectivityMgr().IsWiFiStationProvisioned();
+            sIsWiFiEnabled     = ConnectivityMgr().IsWiFiStationEnabled();
+            sIsWiFiAttached    = ConnectivityMgr().IsWiFiStationConnected();
+#endif /* SL_WIFI */
+#if CHIP_ENABLE_OPENTHREAD
+            sIsThreadProvisioned = ConnectivityMgr().IsThreadProvisioned();
+            sIsThreadEnabled     = ConnectivityMgr().IsThreadEnabled();
+#endif /* CHIP_ENABLE_OPENTHREAD */
+            sHaveBLEConnections = (ConnectivityMgr().NumBLEConnections() != 0);
             PlatformMgr().UnlockChipStack();
         }
 
@@ -211,72 +367,74 @@ void AppTask::AppTaskMain(void * pvParameter)
         // Otherwise, blink the LED ON for a very short time.
         if (sAppTask.mFunction != kFunction_FactoryReset)
         {
-            // Consider the system to be "fully connected" if it has service
-            // connectivity
-            if (sHaveServiceConnectivity)
+            if (gIdentify.mActive)
             {
-                sStatusLED.Set(true);
+                sStatusLED.Blink(250, 250);
             }
-            else if (sIsThreadProvisioned && sIsThreadEnabled)
+            if (sIdentifyEffect != EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_STOP_EFFECT)
+            {
+                if (sIdentifyEffect == EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_BLINK)
+                {
+                    sStatusLED.Blink(50, 50);
+                }
+                if (sIdentifyEffect == EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_BREATHE)
+                {
+                    sStatusLED.Blink(1000, 1000);
+                }
+                if (sIdentifyEffect == EMBER_ZCL_IDENTIFY_EFFECT_IDENTIFIER_OKAY)
+                {
+                    sStatusLED.Blink(300, 700);
+                }
+            }
+#if CHIP_ENABLE_OPENTHREAD
+            if (sIsThreadProvisioned && sIsThreadEnabled)
+#else
+            if (sIsWiFiProvisioned && sIsWiFiEnabled && !sIsWiFiAttached)
+#endif
             {
                 sStatusLED.Blink(950, 50);
             }
-            else if (sHaveBLEConnections)
-            {
-                sStatusLED.Blink(100, 100);
-            }
-            else
-            {
-                sStatusLED.Blink(50, 950);
-            }
+            else if (sHaveBLEConnections) { sStatusLED.Blink(100, 100); }
+            else { sStatusLED.Blink(50, 950); }
         }
 
         sStatusLED.Animate();
         sLockLED.Animate();
-
-        uint64_t nowUS            = chip::System::Platform::Layer::GetClock_Monotonic();
-        uint64_t nextChangeTimeUS = mLastChangeTimeUS + 5 * 1000 * 1000UL;
-
-        if (nowUS > nextChangeTimeUS)
-        {
-            PublishService();
-            mLastChangeTimeUS = nowUS;
-        }
     }
 }
 
 void AppTask::LockActionEventHandler(AppEvent * aEvent)
 {
     bool initiated = false;
-    BoltLockManager::Action_t action;
+    LockManager::Action_t action;
     int32_t actor;
-    int err = CHIP_NO_ERROR;
+    CHIP_ERROR err = CHIP_NO_ERROR;
 
     if (aEvent->Type == AppEvent::kEventType_Lock)
     {
-        action = static_cast<BoltLockManager::Action_t>(aEvent->LockEvent.Action);
+        action = static_cast<LockManager::Action_t>(aEvent->LockEvent.Action);
         actor  = aEvent->LockEvent.Actor;
     }
     else if (aEvent->Type == AppEvent::kEventType_Button)
     {
-        if (BoltLockMgr().IsUnlocked())
+        if (LockMgr().NextState() == true)
         {
-            action = BoltLockManager::LOCK_ACTION;
+            action = LockManager::LOCK_ACTION;
         }
         else
         {
-            action = BoltLockManager::UNLOCK_ACTION;
+            action = LockManager::UNLOCK_ACTION;
         }
         actor = AppEvent::kEventType_Button;
     }
     else
     {
-        err = CHIP_ERROR_MAX;
+        err = APP_ERROR_UNHANDLED_EVENT;
     }
 
     if (err == CHIP_NO_ERROR)
     {
-        initiated = BoltLockMgr().InitiateAction(actor, action);
+        initiated = LockMgr().InitiateAction(actor, action);
 
         if (!initiated)
         {
@@ -285,24 +443,23 @@ void AppTask::LockActionEventHandler(AppEvent * aEvent)
     }
 }
 
-void AppTask::ButtonEventHandler(uint8_t btnIdx, uint8_t btnAction)
+void AppTask::ButtonEventHandler(const sl_button_t * buttonHandle, uint8_t btnAction)
 {
-    if (btnIdx != APP_LOCK_BUTTON && btnIdx != APP_FUNCTION_BUTTON)
+    if (buttonHandle == NULL)
     {
         return;
     }
 
-    AppEvent button_event              = {};
-    button_event.Type                  = AppEvent::kEventType_Button;
-    button_event.ButtonEvent.ButtonIdx = btnIdx;
-    button_event.ButtonEvent.Action    = btnAction;
+    AppEvent button_event           = {};
+    button_event.Type               = AppEvent::kEventType_Button;
+    button_event.ButtonEvent.Action = btnAction;
 
-    if (btnIdx == APP_LOCK_BUTTON && btnAction == APP_BUTTON_PRESSED)
+    if (buttonHandle == APP_LOCK_SWITCH && btnAction == SL_SIMPLE_BUTTON_PRESSED)
     {
         button_event.Handler = LockActionEventHandler;
         sAppTask.PostEvent(&button_event);
     }
-    else if (btnIdx == APP_FUNCTION_BUTTON)
+    else if (buttonHandle == APP_FUNCTION_BUTTON)
     {
         button_event.Handler = FunctionHandler;
         sAppTask.PostEvent(&button_event);
@@ -349,17 +506,12 @@ void AppTask::FunctionTimerEventHandler(AppEvent * aEvent)
     {
         // Actually trigger Factory Reset
         sAppTask.mFunction = kFunction_NoneSelected;
-        ConfigurationMgr().InitiateFactoryReset();
+        chip::Server::GetInstance().ScheduleFactoryReset();
     }
 }
 
 void AppTask::FunctionHandler(AppEvent * aEvent)
 {
-    if (aEvent->ButtonEvent.ButtonIdx != APP_FUNCTION_BUTTON)
-    {
-        return;
-    }
-
     // To trigger software update: press the APP_FUNCTION_BUTTON button briefly (<
     // FACTORY_RESET_TRIGGER_TIMEOUT) To initiate factory reset: press the
     // APP_FUNCTION_BUTTON for FACTORY_RESET_TRIGGER_TIMEOUT +
@@ -367,7 +519,7 @@ void AppTask::FunctionHandler(AppEvent * aEvent)
     // FACTORY_RESET_TRIGGER_TIMEOUT to signal factory reset has been initiated.
     // To cancel factory reset: release the APP_FUNCTION_BUTTON once all LEDs
     // start blinking within the FACTORY_RESET_CANCEL_WINDOW_TIMEOUT
-    if (aEvent->ButtonEvent.Action == APP_BUTTON_PRESSED)
+    if (aEvent->ButtonEvent.Action == SL_SIMPLE_BUTTON_PRESSED)
     {
         if (!sAppTask.mFunctionTimerActive && sAppTask.mFunction == kFunction_NoneSelected)
         {
@@ -383,21 +535,22 @@ void AppTask::FunctionHandler(AppEvent * aEvent)
             sAppTask.CancelTimer();
             sAppTask.mFunction = kFunction_NoneSelected;
 
+#ifdef SL_WIFI
+            if (!ConnectivityMgr().IsWiFiStationProvisioned())
+#else
             if (!ConnectivityMgr().IsThreadProvisioned())
+#endif /* !SL_WIFI */
             {
                 // Enable BLE advertisements
                 ConnectivityMgr().SetBLEAdvertisingEnabled(true);
                 ConnectivityMgr().SetBLEAdvertisingMode(ConnectivityMgr().kFastAdvertising);
             }
-            else
-            {
-                EFR32_LOG("Network is already provisioned, Ble advertissement not enabled");
-            }
+            else { EFR32_LOG("Network is already provisioned, Ble advertissement not enabled"); }
         }
         else if (sAppTask.mFunctionTimerActive && sAppTask.mFunction == kFunction_FactoryReset)
         {
             // Set lock status LED back to show state of lock.
-            sLockLED.Set(!BoltLockMgr().IsUnlocked());
+            sLockLED.Set(!LockMgr().NextState());
 
             sAppTask.CancelTimer();
 
@@ -415,7 +568,7 @@ void AppTask::CancelTimer()
     if (xTimerStop(sFunctionTimer, 0) == pdFAIL)
     {
         EFR32_LOG("app timer stop() failed");
-        appError(CHIP_ERROR_MAX);
+        appError(APP_ERROR_STOP_TIMER_FAILED);
     }
 
     mFunctionTimerActive = false;
@@ -435,59 +588,54 @@ void AppTask::StartTimer(uint32_t aTimeoutInMs)
     if (xTimerChangePeriod(sFunctionTimer, aTimeoutInMs / portTICK_PERIOD_MS, 100) != pdPASS)
     {
         EFR32_LOG("app timer start() failed");
-        appError(CHIP_ERROR_MAX);
+        appError(APP_ERROR_START_TIMER_FAILED);
     }
 
     mFunctionTimerActive = true;
 }
 
-void AppTask::ActionInitiated(BoltLockManager::Action_t aAction, int32_t aActor)
+void AppTask::ActionInitiated(LockManager::Action_t aAction, int32_t aActor)
 {
-    // If the action has been initiated by the lock, update the bolt lock trait
-    // and start flashing the LEDs rapidly to indicate action initiation.
-    if (aAction == BoltLockManager::LOCK_ACTION)
+    // Action initiated, update the light led
+    if (aAction == LockManager::LOCK_ACTION)
     {
         EFR32_LOG("Lock Action has been initiated")
+        sLockLED.Set(false);
     }
-    else if (aAction == BoltLockManager::UNLOCK_ACTION)
+    else if (aAction == LockManager::UNLOCK_ACTION)
     {
         EFR32_LOG("Unlock Action has been initiated")
+        sLockLED.Set(true);
     }
 
     if (aActor == AppEvent::kEventType_Button)
     {
         sAppTask.mSyncClusterToButtonAction = true;
     }
-
-    sLockLED.Blink(50, 50);
 }
 
-void AppTask::ActionCompleted(BoltLockManager::Action_t aAction)
+void AppTask::ActionCompleted(LockManager::Action_t aAction)
 {
-    // if the action has been completed by the lock, update the bolt lock trait.
-    // Turn on the lock LED if in a LOCKED state OR
-    // Turn off the lock LED if in an UNLOCKED state.
-    if (aAction == BoltLockManager::LOCK_ACTION)
+    // if the action has been completed by the lock, update the lock trait.
+    // Turn off the lock LED if in a LOCKED state OR
+    // Turn on the lock LED if in an UNLOCKED state.
+    if (aAction == LockManager::LOCK_ACTION)
     {
         EFR32_LOG("Lock Action has been completed")
-
-        sLockLED.Set(true);
     }
-    else if (aAction == BoltLockManager::UNLOCK_ACTION)
+    else if (aAction == LockManager::UNLOCK_ACTION)
     {
         EFR32_LOG("Unlock Action has been completed")
-
-        sLockLED.Set(false);
     }
 
     if (sAppTask.mSyncClusterToButtonAction)
     {
-        UpdateClusterState();
+        chip::DeviceLayer::PlatformMgr().ScheduleWork(UpdateClusterState, reinterpret_cast<intptr_t>(nullptr));
         sAppTask.mSyncClusterToButtonAction = false;
     }
 }
 
-void AppTask::PostLockActionRequest(int32_t aActor, BoltLockManager::Action_t aAction)
+void AppTask::ActionRequest(int32_t aActor, LockManager::Action_t aAction)
 {
     AppEvent event;
     event.Type             = AppEvent::kEventType_Lock;
@@ -501,10 +649,31 @@ void AppTask::PostEvent(const AppEvent * aEvent)
 {
     if (sAppEventQueue != NULL)
     {
-        if (!xQueueSend(sAppEventQueue, aEvent, 1))
+        BaseType_t status;
+        if (xPortIsInsideInterrupt())
         {
-            EFR32_LOG("Failed to post event to app task event queue");
+            BaseType_t higherPrioTaskWoken = pdFALSE;
+            status                         = xQueueSendFromISR(sAppEventQueue, aEvent, &higherPrioTaskWoken);
+
+#ifdef portYIELD_FROM_ISR
+            portYIELD_FROM_ISR(higherPrioTaskWoken);
+#elif portEND_SWITCHING_ISR // portYIELD_FROM_ISR or portEND_SWITCHING_ISR
+            portEND_SWITCHING_ISR(higherPrioTaskWoken);
+#else                       // portYIELD_FROM_ISR or portEND_SWITCHING_ISR
+#error "Must have portYIELD_FROM_ISR or portEND_SWITCHING_ISR"
+#endif // portYIELD_FROM_ISR or portEND_SWITCHING_ISR
         }
+        else
+        {
+            status = xQueueSend(sAppEventQueue, aEvent, 1);
+        }
+
+        if (!status)
+            EFR32_LOG("Failed to post event to app task event queue");
+    }
+    else
+    {
+        EFR32_LOG("Event Queue is NULL should never happen");
     }
 }
 
@@ -520,15 +689,19 @@ void AppTask::DispatchEvent(AppEvent * aEvent)
     }
 }
 
-void AppTask::UpdateClusterState(void)
+void AppTask::UpdateClusterState(intptr_t context)
 {
-    uint8_t newValue = !BoltLockMgr().IsUnlocked();
+    bool unlocked        = LockMgr().NextState();
+    DlLockState newState = unlocked ? DlLockState::kUnlocked : DlLockState::kLocked;
 
-    // write the new on/off value
-    EmberAfStatus status = emberAfWriteAttribute(1, ZCL_ON_OFF_CLUSTER_ID, ZCL_ON_OFF_ATTRIBUTE_ID, CLUSTER_MASK_SERVER,
-                                                 (uint8_t *) &newValue, ZCL_BOOLEAN_ATTRIBUTE_TYPE);
+    DlOperationSource source = DlOperationSource::kUnspecified;
+
+    // write the new lock value
+    EmberAfStatus status =
+        DoorLockServer::Instance().SetLockState(1, newState, source) ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_FAILURE;
+
     if (status != EMBER_ZCL_STATUS_SUCCESS)
     {
-        EFR32_LOG("ERR: updating on/off %x", status);
+        EFR32_LOG("ERR: updating lock state %x", status);
     }
 }

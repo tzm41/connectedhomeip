@@ -45,17 +45,16 @@
 
 /**
  *    @file
- *          Provides Bluez dbus implementatioon for BLE
+ *          Provides Bluez dbus implementation for BLE
  */
-
 #include <ble/BleUUID.h>
 #include <ble/CHIPBleServiceData.h>
+#include <lib/support/BitFlags.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/CHIPMemString.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <protocols/Protocols.h>
 #include <setup_payload/AdditionalDataPayloadGenerator.h>
-#include <support/BitFlags.h>
-#include <support/CHIPMem.h>
-#include <support/CHIPMemString.h>
 
 #if CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
 #include <cassert>
@@ -67,8 +66,9 @@
 #include <unistd.h>
 #include <utility>
 
+#include <lib/support/CodeUtils.h>
+#include <platform/DeviceInstanceInfoProvider.h>
 #include <platform/Linux/BLEManagerImpl.h>
-#include <support/CodeUtils.h>
 #include <system/TLVPacketBufferBackingStore.h>
 
 #include "BluezObjectIterator.h"
@@ -83,6 +83,8 @@ using chip::Platform::CopyString;
 namespace chip {
 namespace DeviceLayer {
 namespace Internal {
+
+constexpr uint16_t kMaxConnectRetries = 4;
 
 static BluezConnection * GetBluezConnectionViaDevice(BluezEndpoint * apEndpoint);
 
@@ -389,7 +391,7 @@ static gboolean BluezCharacteristicWriteFD(GIOChannel * aChannel, GIOCondition a
 
     len = read(fd, buf, conn->mMtu);
 
-    VerifyOrExit(len > 0, ChipLogError(DeviceLayer, "FAIL: short read in %s (%d)", __func__, len));
+    VerifyOrExit(len > 0, ChipLogError(DeviceLayer, "FAIL: short read in %s (%zd)", __func__, len));
 
     // Casting len to size_t is safe, since we ensured that it's not negative.
     newVal = g_variant_new_fixed_array(G_VARIANT_TYPE_BYTE, buf, static_cast<size_t>(len), sizeof(uint8_t));
@@ -423,7 +425,9 @@ static gboolean BluezCharacteristicAcquireWrite(BluezGattCharacteristic1 * aChar
 {
     int fds[2] = { -1, -1 };
     GIOChannel * channel;
+#if CHIP_ERROR_LOGGING
     char * errStr;
+#endif // CHIP_ERROR_LOGGING
     GVariantDict options;
     bool isSuccess         = false;
     BluezConnection * conn = nullptr;
@@ -439,10 +443,12 @@ static gboolean BluezCharacteristicAcquireWrite(BluezGattCharacteristic1 * aChar
 
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) < 0)
     {
+#if CHIP_ERROR_LOGGING
         errStr = strerror(errno);
+#endif // CHIP_ERROR_LOGGING
         ChipLogError(DeviceLayer, "FAIL: socketpair: %s in %s", errStr, __func__);
         g_dbus_method_invocation_return_dbus_error(aInvocation, "org.bluez.Error.Failed", "FD creation failed");
-        SuccessOrExit(false);
+        goto exit;
     }
 
     g_variant_dict_init(&options, aOptions);
@@ -455,7 +461,7 @@ static gboolean BluezCharacteristicAcquireWrite(BluezGattCharacteristic1 * aChar
     {
         ChipLogError(DeviceLayer, "FAIL: no MTU in options in %s", __func__);
         g_dbus_method_invocation_return_dbus_error(aInvocation, "org.bluez.Error.InvalidArguments", "MTU negotiation failed");
-        SuccessOrExit(false);
+        goto exit;
     }
 
     channel = g_io_channel_unix_new(fds[0]);
@@ -491,7 +497,9 @@ static gboolean BluezCharacteristicAcquireNotify(BluezGattCharacteristic1 * aCha
 {
     int fds[2] = { -1, -1 };
     GIOChannel * channel;
+#if CHIP_ERROR_LOGGING
     char * errStr;
+#endif // CHIP_ERROR_LOGGING
     GVariantDict options;
     BluezConnection * conn = nullptr;
     bool isSuccess         = false;
@@ -516,10 +524,12 @@ static gboolean BluezCharacteristicAcquireNotify(BluezGattCharacteristic1 * aCha
     }
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) < 0)
     {
+#if CHIP_ERROR_LOGGING
         errStr = strerror(errno);
+#endif // CHIP_ERROR_LOGGING
         ChipLogError(DeviceLayer, "FAIL: socketpair: %s in %s", errStr, __func__);
         g_dbus_method_invocation_return_dbus_error(aInvocation, "org.bluez.Error.Failed", "FD creation failed");
-        SuccessOrExit(false);
+        goto exit;
     }
     channel = g_io_channel_unix_new(fds[0]);
     g_io_channel_set_encoding(channel, nullptr, nullptr);
@@ -914,7 +924,7 @@ static void BluezHandleNewDevice(BluezDevice1 * device, BluezEndpoint * apEndpoi
     conn = static_cast<BluezConnection *>(
         g_hash_table_lookup(apEndpoint->mpConnMap, g_dbus_proxy_get_object_path(G_DBUS_PROXY(device))));
     VerifyOrExit(conn == nullptr,
-                 ChipLogError(DeviceLayer, "FAIL: connection already tracked: conn: %x new device: %s", conn,
+                 ChipLogError(DeviceLayer, "FAIL: connection already tracked: conn: %p new device: %s", conn,
                               g_dbus_proxy_get_object_path(G_DBUS_PROXY(device))));
 
     conn                = g_new0(BluezConnection, 1);
@@ -1189,23 +1199,23 @@ static void UpdateAdditionalDataCharacteristic(BluezGattCharacteristic1 * charac
     gpointer data;
     CHIP_ERROR err = CHIP_NO_ERROR;
     chip::System::PacketBufferHandle bufferHandle;
-
-    char serialNumber[ConfigurationManager::kMaxSerialNumberLength + 1];
-    size_t serialNumberSize  = 0;
-    uint16_t lifetimeCounter = 0;
     BitFlags<AdditionalDataFields> additionalDataFields;
+    AdditionalDataPayloadGeneratorParams additionalDataPayloadParams;
 
-#if CHIP_ENABLE_ROTATING_DEVICE_ID
-    err = ConfigurationMgr().GetSerialNumber(serialNumber, sizeof(serialNumber), serialNumberSize);
-    SuccessOrExit(err);
-    err = ConfigurationMgr().GetLifetimeCounter(lifetimeCounter);
-    SuccessOrExit(err);
+#if CHIP_ENABLE_ROTATING_DEVICE_ID && defined(CHIP_DEVICE_CONFIG_ROTATING_DEVICE_ID_UNIQUE_ID)
+    uint8_t rotatingDeviceIdUniqueId[ConfigurationManager::kRotatingDeviceIDUniqueIDLength] = {};
+    MutableByteSpan rotatingDeviceIdUniqueIdSpan(rotatingDeviceIdUniqueId);
 
+    err = GetDeviceInstanceInfoProvider()->GetRotatingDeviceIdUniqueId(rotatingDeviceIdUniqueIdSpan);
+    SuccessOrExit(err);
+    err = ConfigurationMgr().GetLifetimeCounter(additionalDataPayloadParams.rotatingDeviceIdLifetimeCounter);
+    SuccessOrExit(err);
+    additionalDataPayloadParams.rotatingDeviceIdUniqueId = rotatingDeviceIdUniqueIdSpan;
     additionalDataFields.Set(AdditionalDataFields::RotatingDeviceId);
-#endif
+#endif /* CHIP_ENABLE_ROTATING_DEVICE_ID && defined(CHIP_DEVICE_CONFIG_ROTATING_DEVICE_ID_UNIQUE_ID) */
 
-    err = AdditionalDataPayloadGenerator().generateAdditionalDataPayload(lifetimeCounter, serialNumber, serialNumberSize,
-                                                                         bufferHandle, additionalDataFields);
+    err = AdditionalDataPayloadGenerator().generateAdditionalDataPayload(additionalDataPayloadParams, bufferHandle,
+                                                                         additionalDataFields);
     SuccessOrExit(err);
 
     data = g_memdup(bufferHandle->Start(), bufferHandle->DataLength());
@@ -1218,7 +1228,7 @@ static void UpdateAdditionalDataCharacteristic(BluezGattCharacteristic1 * charac
 exit:
     if (err != CHIP_NO_ERROR)
     {
-        ChipLogError(DeviceLayer, "Failed to generate TLV encoded Additional Data", __func__);
+        ChipLogError(DeviceLayer, "Failed to generate TLV encoded Additional Data (%s)", __func__);
     }
     return;
 }
@@ -1521,6 +1531,10 @@ CHIP_ERROR ConfigureBluezAdv(BLEAdvConfig & aBleAdvConfig, BluezEndpoint * apEnd
     err = ConfigurationMgr().GetBLEDeviceIdentificationInfo(apEndpoint->mDeviceIdInfo);
     SuccessOrExit(err);
 
+#if CHIP_ENABLE_ADDITIONAL_DATA_ADVERTISING
+    apEndpoint->mDeviceIdInfo.SetAdditionalDataFlag(true);
+#endif
+
 exit:
     if (nullptr != msg)
     {
@@ -1658,8 +1672,6 @@ static void SubscribeCharacteristicDone(GObject * aObject, GAsyncResult * aResul
 
     VerifyOrExit(success == TRUE, ChipLogError(DeviceLayer, "FAIL: BluezSubscribeCharacteristic : %s", error->message));
 
-    // Get notifications on the TX characteristic change (e.g. indication is received)
-    g_signal_connect(c2, "g-properties-changed", G_CALLBACK(OnCharacteristicChanged), apConnection);
     BLEManagerImpl::HandleSubscribeOpComplete(static_cast<BLE_CONNECTION_OBJECT>(apConnection), true);
 
 exit:
@@ -1669,9 +1681,13 @@ exit:
 
 static gboolean SubscribeCharacteristicImpl(BluezConnection * connection)
 {
+    BluezGattCharacteristic1 * c2 = nullptr;
     VerifyOrExit(connection != nullptr, ChipLogError(DeviceLayer, "BluezConnection is NULL in %s", __func__));
     VerifyOrExit(connection->mpC2 != nullptr, ChipLogError(DeviceLayer, "C2 is NULL in %s", __func__));
+    c2 = BLUEZ_GATT_CHARACTERISTIC1(connection->mpC2);
 
+    // Get notifications on the TX characteristic change (e.g. indication is received)
+    g_signal_connect(c2, "g-properties-changed", G_CALLBACK(OnCharacteristicChanged), connection);
     bluez_gatt_characteristic1_call_start_notify(connection->mpC2, nullptr, SubscribeCharacteristicDone, connection);
 
 exit:
@@ -1722,25 +1738,48 @@ bool BluezUnsubscribeCharacteristic(BLE_CONNECTION_OBJECT apConn)
 
 struct ConnectParams
 {
-    ConnectParams(BluezDevice1 * device, BluezEndpoint * endpoint) : mDevice(device), mEndpoint(endpoint) {}
+    ConnectParams(BluezDevice1 * device, BluezEndpoint * endpoint) : mDevice(device), mEndpoint(endpoint), mNumRetries(0) {}
     BluezDevice1 * mDevice;
     BluezEndpoint * mEndpoint;
+    uint16_t mNumRetries;
 };
 
-static void ConnectDeviceDone(GObject * aObject, GAsyncResult * aResult, gpointer)
+static void ConnectDeviceDone(GObject * aObject, GAsyncResult * aResult, gpointer apParams)
 {
-    BluezDevice1 * device = BLUEZ_DEVICE1(aObject);
-    GError * error        = nullptr;
-    gboolean success      = bluez_device1_call_connect_finish(device, aResult, &error);
+    BluezDevice1 * device  = BLUEZ_DEVICE1(aObject);
+    GError * error         = nullptr;
+    gboolean success       = bluez_device1_call_connect_finish(device, aResult, &error);
+    ConnectParams * params = static_cast<ConnectParams *>(apParams);
+
+    assert(params != nullptr);
 
     if (!success)
     {
-        ChipLogError(DeviceLayer, "FAIL: ConnectDevice : %s", error->message);
+        ChipLogError(DeviceLayer, "FAIL: ConnectDevice : %s (%d)", error->message, error->code);
+
+        // Due to radio interferences or Wi-Fi coexistence, sometimes the BLE connection may not be
+        // established (e.g. Connection Indication Packet is missed by BLE peripheral). In such case,
+        // BlueZ returns "Software caused connection abort error", and we should make a connection retry.
+        // It's important to make sure that the connection is correctly ceased, by calling `Disconnect()`
+        // D-Bus method, or else `Connect()` returns immediately without any effect.
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_DBUS_ERROR) && params->mNumRetries++ < kMaxConnectRetries)
+        {
+            // Clear the error before usage in subsequent call.
+            g_clear_error(&error);
+
+            bluez_device1_call_disconnect_sync(device, nullptr, &error);
+            bluez_device1_call_connect(device, params->mEndpoint->mpConnectCancellable, ConnectDeviceDone, params);
+            ExitNow();
+        }
+
         BLEManagerImpl::HandleConnectFailed(CHIP_ERROR_INTERNAL);
-        ExitNow();
+    }
+    else
+    {
+        ChipLogDetail(DeviceLayer, "ConnectDevice complete");
     }
 
-    ChipLogDetail(DeviceLayer, "ConnectDevice complete");
+    chip::Platform::Delete(params);
 
 exit:
     if (error != nullptr)
@@ -1756,9 +1795,8 @@ static gboolean ConnectDeviceImpl(ConnectParams * apParams)
     assert(endpoint != nullptr);
 
     g_cancellable_reset(endpoint->mpConnectCancellable);
-    bluez_device1_call_connect(device, endpoint->mpConnectCancellable, ConnectDeviceDone, nullptr);
+    bluez_device1_call_connect(device, endpoint->mpConnectCancellable, ConnectDeviceDone, apParams);
     g_object_unref(device);
-    chip::Platform::Delete(apParams);
 
     return G_SOURCE_REMOVE;
 }

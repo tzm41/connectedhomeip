@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *    Copyright (c) 2013-2017 Nest Labs, Inc.
  *    All rights reserved.
  *
@@ -27,6 +27,9 @@
 #define __STDC_FORMAT_MACROS
 
 #include "chip-cert.h"
+#include <lib/support/BytesToHex.h>
+
+#include <string>
 
 using namespace chip;
 using namespace chip::Credentials;
@@ -45,49 +48,50 @@ bool ToolChipDN::SetCertSubjectDN(X509 * cert) const
         case kOID_AttributeType_CommonName:
             attrNID = NID_commonName;
             break;
-        case kOID_AttributeType_ChipNodeId:
+        case kOID_AttributeType_MatterNodeId:
             attrNID = gNIDChipNodeId;
             break;
-        case kOID_AttributeType_ChipFirmwareSigningId:
+        case kOID_AttributeType_MatterFirmwareSigningId:
             attrNID = gNIDChipFirmwareSigningId;
             break;
-        case kOID_AttributeType_ChipICAId:
+        case kOID_AttributeType_MatterICACId:
             attrNID = gNIDChipICAId;
             break;
-        case kOID_AttributeType_ChipRootId:
+        case kOID_AttributeType_MatterRCACId:
             attrNID = gNIDChipRootId;
             break;
-        case kOID_AttributeType_ChipFabricId:
+        case kOID_AttributeType_MatterFabricId:
             attrNID = gNIDChipFabricId;
             break;
-        case kOID_AttributeType_ChipAuthTag1:
-            attrNID = gNIDChipAuthTag1;
-            break;
-        case kOID_AttributeType_ChipAuthTag2:
-            attrNID = gNIDChipAuthTag2;
+        case kOID_AttributeType_MatterCASEAuthTag:
+            attrNID = gNIDChipCASEAuthenticatedTag;
             break;
         default:
             ExitNow(res = false);
         }
 
-        if (IsChipDNAttr(rdn[i].mAttrOID))
+        if (IsChip64bitDNAttr(rdn[i].mAttrOID))
         {
-            char chipAttrStr[17];
-            int chipAttrLen;
+            char chipAttrStr[kChip64bitAttrUTF8Length];
+            VerifyOrReturnError(Encoding::Uint64ToHex(rdn[i].mChipVal, chipAttrStr, sizeof(chipAttrStr),
+                                                      Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                false);
 
-            if (IsChip64bitDNAttr(rdn[i].mAttrOID))
+            if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(cert), attrNID, MBSTRING_UTF8,
+                                            reinterpret_cast<uint8_t *>(chipAttrStr), sizeof(chipAttrStr), -1, 0))
             {
-                snprintf(chipAttrStr, sizeof(chipAttrStr), "%016" PRIX64 "", rdn[i].mAttrValue.mChipVal);
-                chipAttrLen = 16;
+                ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
             }
-            else
-            {
-                snprintf(chipAttrStr, sizeof(chipAttrStr), "%08" PRIX32 "", static_cast<uint32_t>(rdn[i].mAttrValue.mChipVal));
-                chipAttrLen = 8;
-            }
+        }
+        else if (IsChip32bitDNAttr(rdn[i].mAttrOID))
+        {
+            char chipAttrStr[kChip32bitAttrUTF8Length];
+            VerifyOrReturnError(Encoding::Uint32ToHex(static_cast<uint32_t>(rdn[i].mChipVal), chipAttrStr, sizeof(chipAttrStr),
+                                                      Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                false);
 
-            if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(cert), attrNID, MBSTRING_UTF8, (unsigned char *) chipAttrStr,
-                                            chipAttrLen, -1, 0))
+            if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(cert), attrNID, MBSTRING_UTF8,
+                                            reinterpret_cast<uint8_t *>(chipAttrStr), sizeof(chipAttrStr), -1, 0))
             {
                 ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
             }
@@ -95,8 +99,8 @@ bool ToolChipDN::SetCertSubjectDN(X509 * cert) const
         else
         {
             if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(cert), attrNID, MBSTRING_UTF8,
-                                            (unsigned char *) rdn[i].mAttrValue.mString.mValue,
-                                            (int) rdn[i].mAttrValue.mString.mLen, -1, 0))
+                                            reinterpret_cast<uint8_t *>(const_cast<char *>(rdn[i].mString.data())),
+                                            static_cast<int>(rdn[i].mString.size()), -1, 0))
             {
                 ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
             }
@@ -134,20 +138,21 @@ void ToolChipDN::PrintDN(FILE * file, const char * name) const
     {
         if (IsChip64bitDNAttr(rdn[i].mAttrOID))
         {
-            snprintf(valueStr, sizeof(valueStr), "%016" PRIX64, rdn[i].mAttrValue.mChipVal);
+            Encoding::Uint64ToHex(rdn[i].mChipVal, valueStr, sizeof(valueStr), Encoding::HexFlags::kUppercaseAndNullTerminate);
         }
         else if (IsChip32bitDNAttr(rdn[i].mAttrOID))
         {
-            snprintf(valueStr, sizeof(valueStr), "%08" PRIX32, static_cast<uint32_t>(rdn[i].mAttrValue.mChipVal));
+            Encoding::Uint32ToHex(static_cast<uint32_t>(rdn[i].mChipVal), valueStr, sizeof(valueStr),
+                                  Encoding::HexFlags::kUppercaseAndNullTerminate);
         }
         else
         {
-            uint32_t len = rdn[i].mAttrValue.mString.mLen;
+            size_t len = rdn[i].mString.size();
             if (len > sizeof(valueStr) - 1)
             {
                 len = sizeof(valueStr) - 1;
             }
-            memcpy(valueStr, rdn[i].mAttrValue.mString.mValue, len);
+            memcpy(valueStr, rdn[i].mString.data(), len);
             valueStr[len] = 0;
         }
 
@@ -163,10 +168,10 @@ namespace {
 
 CertFormat DetectCertFormat(uint8_t * cert, uint32_t certLen)
 {
-    static const uint8_t chipRawPrefix[]   = { 0xD5, 0x00, 0x00, 0x08, 0x00, 0x01, 0x00 };
-    static const char * chipB64Prefix      = "1QAACAAB";
-    static const uint32_t chipB64PrefixLen = sizeof(chipB64Prefix) - 1;
-    static const char * pemMarker          = "-----BEGIN CERTIFICATE-----";
+    static const uint8_t chipRawPrefix[] = { 0x15, 0x30, 0x01 };
+    static const char * chipB64Prefix    = "FTAB";
+    static const size_t chipB64PrefixLen = strlen(chipB64Prefix);
+    static const char * pemMarker        = "-----BEGIN CERTIFICATE-----";
 
     if (certLen > sizeof(chipRawPrefix) && memcmp(cert, chipRawPrefix, sizeof(chipRawPrefix)) == 0)
     {
@@ -216,8 +221,10 @@ bool SetCertTimeField(ASN1_TIME * asn1Time, const struct tm & value)
     char timeStr[16];
 
     // Encode the time as a string in the form YYYYMMDDHHMMSSZ.
-    snprintf(timeStr, sizeof(timeStr), "%04d%02d%02d%02d%02d%02dZ", static_cast<uint16_t>(value.tm_year + 1900) % 9999,
-             static_cast<uint8_t>(value.tm_mon) % kMonthsPerYear + 1, static_cast<uint8_t>(value.tm_mday) % kMaxDaysPerMonth,
+    snprintf(timeStr, sizeof(timeStr), "%04d%02d%02d%02d%02d%02dZ",
+             (value.tm_year == kX509NoWellDefinedExpirationDateYear) ? kX509NoWellDefinedExpirationDateYear
+                                                                     : (static_cast<uint16_t>(value.tm_year + 1900) % 9999),
+             static_cast<uint8_t>(value.tm_mon) % kMonthsPerYear + 1, static_cast<uint8_t>(value.tm_mday) % (kMaxDaysPerMonth + 1),
              static_cast<uint8_t>(value.tm_hour) % kHoursPerDay, static_cast<uint8_t>(value.tm_min) % kMinutesPerHour,
              static_cast<uint8_t>(value.tm_sec) % kSecondsPerMinute);
 
@@ -250,17 +257,31 @@ bool SetValidityTime(X509 * cert, const struct tm & validFrom, uint32_t validDay
     // Note that this computation is done in local time, despite the fact that the certificate validity times are
     // UTC.  This is because the standard posix time functions do not make it easy to convert a struct tm containing
     // UTC to a time_t value without manipulating the TZ environment variable.
-    validTo = validFrom;
-    validTo.tm_mday += validDays;
-    validTo.tm_sec -= 1; // Ensure validity period is exactly a multiple of a day.
-    validTo.tm_isdst = -1;
-    validToTime      = mktime(&validTo);
-    if (validToTime == static_cast<time_t>(-1))
+    if (validDays == kCertValidDays_NoWellDefinedExpiration)
     {
-        fprintf(stderr, "mktime() failed\n");
-        ExitNow(res = false);
+        validTo.tm_year  = kX509NoWellDefinedExpirationDateYear;
+        validTo.tm_mon   = kMonthsPerYear - 1;
+        validTo.tm_mday  = kMaxDaysPerMonth;
+        validTo.tm_hour  = kHoursPerDay - 1;
+        validTo.tm_min   = kMinutesPerHour - 1;
+        validTo.tm_sec   = kSecondsPerMinute - 1;
+        validTo.tm_isdst = -1;
     }
-    localtime_r(&validToTime, &validTo);
+    else
+    {
+        validTo = validFrom;
+        validTo.tm_mday += validDays;
+        validTo.tm_sec -= 1; // Ensure validity period is exactly a multiple of a day.
+        validTo.tm_isdst = -1;
+        validToTime      = mktime(&validTo);
+
+        if (validToTime == static_cast<time_t>(-1))
+        {
+            fprintf(stderr, "mktime() failed\n");
+            ExitNow(res = false);
+        }
+        localtime_r(&validToTime, &validTo);
+    }
 
     // Set the certificate's notBefore date.
     res = SetCertTimeField(X509_get_notBefore(cert), validFrom);
@@ -335,9 +356,8 @@ bool AddAuthorityKeyId(X509 * cert, X509 * caCert)
     int index = 0;
     std::unique_ptr<AUTHORITY_KEYID, void (*)(AUTHORITY_KEYID *)> akid(AUTHORITY_KEYID_new(), &AUTHORITY_KEYID_free);
 
-    akid.get()->keyid =
-        reinterpret_cast<ASN1_OCTET_STRING *>(X509_get_ext_d2i(caCert, NID_subject_key_identifier, &isCritical, &index));
-    if (akid.get()->keyid == nullptr)
+    akid->keyid = reinterpret_cast<ASN1_OCTET_STRING *>(X509_get_ext_d2i(caCert, NID_subject_key_identifier, &isCritical, &index));
+    if (akid->keyid == nullptr)
     {
         ReportOpenSSLErrorAndExit("X509_get_ext_d2i", res = false);
     }
@@ -379,11 +399,8 @@ bool ReadCert(const char * fileName, X509 * cert)
 
 bool ReadCert(const char * fileName, X509 * cert, CertFormat & certFmt)
 {
-    bool res          = true;
-    CHIP_ERROR err    = CHIP_NO_ERROR;
-    const uint8_t * p = nullptr;
-    uint32_t certLen  = 0;
-    std::unique_ptr<uint8_t[]> x509CertBuf(new uint8_t[kMaxX509CertBufSize]);
+    bool res         = true;
+    uint32_t certLen = 0;
     std::unique_ptr<uint8_t[]> certBuf;
 
     res = ReadFileIntoMem(fileName, nullptr, certLen);
@@ -401,6 +418,18 @@ bool ReadCert(const char * fileName, X509 * cert, CertFormat & certFmt)
         res = ReadCertPEM(fileName, cert);
         VerifyTrueOrExit(res);
     }
+    else if (certFmt == kCertFormat_X509_DER)
+    {
+        const uint8_t * outCert = certBuf.get();
+
+        VerifyOrReturnError(chip::CanCastTo<int>(certLen), false);
+
+        if (d2i_X509(&cert, &outCert, static_cast<int>(certLen)) == nullptr)
+        {
+            ReportOpenSSLErrorAndExit("d2i_X509", res = false);
+        }
+    }
+    // Otherwise, it is either CHIP TLV or CHIP TLV Base64 encoded.
     else
     {
         if (certFmt == kCertFormat_Chip_Base64)
@@ -409,23 +438,21 @@ bool ReadCert(const char * fileName, X509 * cert, CertFormat & certFmt)
             VerifyTrueOrExit(res);
         }
 
-        if (certFmt == kCertFormat_Chip_Base64 || certFmt == kCertFormat_Chip_Raw)
-        {
-            err = ConvertChipCertToX509Cert(certBuf.get(), certLen, x509CertBuf.get(), kMaxX509CertBufSize, certLen);
-            if (err != CHIP_NO_ERROR)
-            {
-                fprintf(stderr, "Error converting certificate: %s\n", chip::ErrorStr(err));
-                ExitNow(res = false);
-            }
+        std::unique_ptr<uint8_t[]> x509CertBuf(new uint8_t[kMaxDERCertLength]);
+        MutableByteSpan x509Cert(x509CertBuf.get(), kMaxDERCertLength);
 
-            p = x509CertBuf.get();
-        }
-        else
+        CHIP_ERROR err = ConvertChipCertToX509Cert(ByteSpan(certBuf.get(), certLen), x509Cert);
+        if (err != CHIP_NO_ERROR)
         {
-            p = certBuf.get();
+            fprintf(stderr, "Error converting certificate: %s\n", chip::ErrorStr(err));
+            ExitNow(res = false);
         }
 
-        if (d2i_X509(&cert, &p, certLen) == nullptr)
+        const uint8_t * outCert = x509Cert.data();
+
+        VerifyOrReturnError(chip::CanCastTo<int>(x509Cert.size()), false);
+
+        if (d2i_X509(&cert, &outCert, static_cast<int>(x509Cert.size())) == nullptr)
         {
             ReportOpenSSLErrorAndExit("d2i_X509", res = false);
         }
@@ -435,12 +462,33 @@ exit:
     return res;
 }
 
-bool X509ToChipCert(X509 * cert, uint8_t * certBuf, uint32_t certBufSize, uint32_t & certLen)
+bool ReadCertDERRaw(const char * fileName, MutableByteSpan & cert)
+{
+    bool res = true;
+    std::unique_ptr<X509, void (*)(X509 *)> certX509(X509_new(), &X509_free);
+
+    VerifyOrReturnError(ReadCertPEM(fileName, certX509.get()) == true, false);
+
+    uint8_t * certPtr = cert.data();
+    int certLen       = i2d_X509(certX509.get(), &certPtr);
+    if (certLen < 0)
+    {
+        ReportOpenSSLErrorAndExit("i2d_X509", res = false);
+    }
+
+    VerifyOrReturnError(chip::CanCastTo<size_t>(certLen), false);
+    cert.reduce_size(static_cast<size_t>(certLen));
+
+exit:
+    return res;
+}
+
+bool X509ToChipCert(X509 * cert, MutableByteSpan & chipCert)
 {
     bool res = true;
     CHIP_ERROR err;
     uint8_t * derCert = nullptr;
-    int32_t derCertLen;
+    int derCertLen;
 
     derCertLen = i2d_X509(cert, &derCert);
     if (derCertLen < 0)
@@ -448,7 +496,9 @@ bool X509ToChipCert(X509 * cert, uint8_t * certBuf, uint32_t certBufSize, uint32
         ReportOpenSSLErrorAndExit("i2d_X509", res = false);
     }
 
-    err = ConvertX509CertToChipCert(derCert, static_cast<uint32_t>(derCertLen), certBuf, certBufSize, certLen);
+    VerifyOrReturnError(chip::CanCastTo<size_t>(derCertLen), false);
+
+    err = ConvertX509CertToChipCert(ByteSpan(derCert, static_cast<size_t>(derCertLen)), chipCert);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "ConvertX509CertToChipCert() failed\n%s\n", chip::ErrorStr(err));
@@ -459,18 +509,17 @@ exit:
     return res;
 }
 
-bool LoadChipCert(const char * fileName, bool isTrused, ChipCertificateSet & certSet, uint8_t * certBuf, uint32_t certBufSize)
+bool LoadChipCert(const char * fileName, bool isTrused, ChipCertificateSet & certSet, MutableByteSpan & chipCert)
 {
     bool res = true;
     CHIP_ERROR err;
-    uint32_t certLen;
     BitFlags<CertDecodeFlags> decodeFlags;
     std::unique_ptr<X509, void (*)(X509 *)> cert(X509_new(), &X509_free);
 
     res = ReadCert(fileName, cert.get());
     VerifyTrueOrExit(res);
 
-    res = X509ToChipCert(cert.get(), certBuf, certBufSize, certLen);
+    res = X509ToChipCert(cert.get(), chipCert);
     VerifyTrueOrExit(res);
 
     if (isTrused)
@@ -482,7 +531,7 @@ bool LoadChipCert(const char * fileName, bool isTrused, ChipCertificateSet & cer
         decodeFlags.Set(CertDecodeFlags::kGenerateTBSHash);
     }
 
-    err = certSet.LoadCert(certBuf, certLen, decodeFlags);
+    err = certSet.LoadCert(chipCert, decodeFlags);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "Error reading %s\n%s\n", fileName, chip::ErrorStr(err));
@@ -520,18 +569,19 @@ bool WriteCert(const char * fileName, X509 * cert, CertFormat certFmt)
     else if (certFmt == kCertFormat_Chip_Raw || certFmt == kCertFormat_Chip_Base64)
     {
         uint8_t * certToWrite      = nullptr;
-        uint32_t certToWriteLen    = 0;
-        uint32_t chipCertLen       = kMaxChipCertBufSize;
-        uint32_t chipCertBase64Len = BASE64_ENCODED_LEN(chipCertLen);
-        std::unique_ptr<uint8_t[]> chipCert(new uint8_t[chipCertLen]);
+        size_t certToWriteLen      = 0;
+        uint32_t chipCertBase64Len = BASE64_ENCODED_LEN(kMaxCHIPCertLength);
         std::unique_ptr<uint8_t[]> chipCertBase64(new uint8_t[chipCertBase64Len]);
+        uint8_t chipCertBuf[kMaxCHIPCertLength];
+        MutableByteSpan chipCert(chipCertBuf);
 
-        res = X509ToChipCert(cert, chipCert.get(), chipCertLen, chipCertLen);
+        res = X509ToChipCert(cert, chipCert);
         VerifyTrueOrExit(res);
 
         if (certFmt == kCertFormat_Chip_Base64)
         {
-            res = Base64Encode(chipCert.get(), chipCertLen, chipCertBase64.get(), chipCertBase64Len, chipCertBase64Len);
+            res = Base64Encode(chipCert.data(), static_cast<uint32_t>(chipCert.size()), chipCertBase64.get(), chipCertBase64Len,
+                               chipCertBase64Len);
             VerifyTrueOrExit(res);
 
             certToWrite    = chipCertBase64.get();
@@ -539,8 +589,8 @@ bool WriteCert(const char * fileName, X509 * cert, CertFormat certFmt)
         }
         else
         {
-            certToWrite    = chipCert.get();
-            certToWriteLen = chipCertLen;
+            certToWrite    = chipCert.data();
+            certToWriteLen = chipCert.size();
         }
 
         if (fwrite(certToWrite, 1, certToWriteLen, file) != certToWriteLen)
@@ -556,7 +606,8 @@ exit:
 }
 
 bool MakeCert(uint8_t certType, const ToolChipDN * subjectDN, X509 * caCert, EVP_PKEY * caKey, const struct tm & validFrom,
-              uint32_t validDays, const FutureExtension * futureExts, uint8_t futureExtsCount, X509 * newCert, EVP_PKEY * newKey)
+              uint32_t validDays, int pathLen, const FutureExtension * futureExts, uint8_t futureExtsCount, X509 * newCert,
+              EVP_PKEY * newKey)
 {
     bool res = true;
 
@@ -597,23 +648,42 @@ bool MakeCert(uint8_t certType, const ToolChipDN * subjectDN, X509 * caCert, EVP
         ReportOpenSSLErrorAndExit("X509_set_issuer_name", res = false);
     }
 
+    // Add basic constraints certificate extensions.
+    {
+        std::string basicConstraintsExt;
+
+        if (certType == kCertType_Node || certType == kCertType_FirmwareSigning)
+        {
+            basicConstraintsExt = "critical,CA:FALSE";
+        }
+        else
+        {
+            basicConstraintsExt = "critical,CA:TRUE";
+        }
+
+        if (pathLen != kPathLength_NotSpecified)
+        {
+            basicConstraintsExt.append(",pathlen:" + std::to_string(pathLen));
+        }
+
+        res = AddExtension(newCert, NID_basic_constraints, basicConstraintsExt.c_str());
+        VerifyTrueOrExit(res);
+    }
+
     // Add the appropriate certificate extensions.
     if (certType == kCertType_Node)
     {
-        res = AddExtension(newCert, NID_basic_constraints, "critical,CA:FALSE") &&
-            AddExtension(newCert, NID_key_usage, "critical,digitalSignature,keyEncipherment") &&
+        res = AddExtension(newCert, NID_key_usage, "critical,digitalSignature") &&
             AddExtension(newCert, NID_ext_key_usage, "critical,clientAuth,serverAuth");
     }
     else if (certType == kCertType_FirmwareSigning)
     {
-        res = AddExtension(newCert, NID_basic_constraints, "critical,CA:FALSE") &&
-            AddExtension(newCert, NID_key_usage, "critical,digitalSignature") &&
+        res = AddExtension(newCert, NID_key_usage, "critical,digitalSignature") &&
             AddExtension(newCert, NID_ext_key_usage, "critical,codeSigning");
     }
     else if (certType == kCertType_ICA || certType == kCertType_Root)
     {
-        res = AddExtension(newCert, NID_basic_constraints, "critical,CA:TRUE") &&
-            AddExtension(newCert, NID_key_usage, "critical,keyCertSign,cRLSign");
+        res = AddExtension(newCert, NID_key_usage, "critical,keyCertSign,cRLSign");
     }
     VerifyTrueOrExit(res);
 
@@ -669,6 +739,291 @@ bool ResignCert(X509 * cert, X509 * caCert, EVP_PKEY * caKey)
     VerifyTrueOrExit(res);
 
     if (!X509_sign(cert, caKey, EVP_sha256()))
+    {
+        ReportOpenSSLErrorAndExit("X509_sign", res = false);
+    }
+
+exit:
+    return res;
+}
+
+bool MakeAttCert(AttCertType attCertType, const char * subjectCN, uint16_t subjectVID, uint16_t subjectPID,
+                 bool encodeVIDandPIDasCN, X509 * caCert, EVP_PKEY * caKey, const struct tm & validFrom, uint32_t validDays,
+                 X509 * newCert, EVP_PKEY * newKey, AttCertStructConfig & certConfig)
+{
+    bool res     = true;
+    uint16_t vid = certConfig.IsSubjectVIDMismatch() ? static_cast<uint16_t>(subjectVID + 1) : subjectVID;
+    uint16_t pid = certConfig.IsSubjectPIDMismatch() ? static_cast<uint16_t>(subjectPID + 1) : subjectPID;
+
+    VerifyOrReturnError(subjectCN != nullptr, false);
+    VerifyOrReturnError(caCert != nullptr, false);
+    VerifyOrReturnError(caKey != nullptr, false);
+    VerifyOrReturnError(newCert != nullptr, false);
+    VerifyOrReturnError(newKey != nullptr, false);
+
+    if (!X509_set_version(newCert, certConfig.GetCertVersion()))
+    {
+        ReportOpenSSLErrorAndExit("X509_set_version", res = false);
+    }
+
+    // Generate a serial number for the cert.
+    res = SetCertSerialNumber(newCert);
+    VerifyTrueOrExit(res);
+
+    // Set the certificate validity time.
+    res = SetValidityTime(newCert, validFrom, validDays);
+    VerifyTrueOrExit(res);
+
+    // Set the certificate's public key.
+    if (!X509_set_pubkey(newCert, newKey))
+    {
+        ReportOpenSSLErrorAndExit("X509_set_pubkey", res = false);
+    }
+
+    // Encode Common Name (CN) Attribute.
+    {
+        char cnAttrStr[chip::Crypto::kMax_CommonNameAttr_Length];
+        size_t cnAttrStrLen = 0;
+        if (subjectCN != nullptr)
+        {
+            VerifyOrReturnError(strlen(subjectCN) <= sizeof(cnAttrStr), false);
+            memcpy(cnAttrStr, subjectCN, strlen(subjectCN));
+            cnAttrStrLen += strlen(subjectCN);
+        }
+
+        if (encodeVIDandPIDasCN)
+        {
+            if (subjectVID != VendorId::NotSpecified)
+            {
+                // Add space to separate from the previous string.
+                if (cnAttrStrLen > 0)
+                {
+                    VerifyOrReturnError((cnAttrStrLen + 1) <= sizeof(cnAttrStr), false);
+                    cnAttrStr[cnAttrStrLen] = ' ';
+                    cnAttrStrLen++;
+                }
+
+                VerifyOrReturnError((cnAttrStrLen + strlen(chip::Crypto::kVIDPrefixForCNEncoding) +
+                                     chip::Crypto::kVIDandPIDHexLength) <= sizeof(cnAttrStr),
+                                    false);
+
+                memcpy(&cnAttrStr[cnAttrStrLen], chip::Crypto::kVIDPrefixForCNEncoding,
+                       strlen(chip::Crypto::kVIDPrefixForCNEncoding));
+                cnAttrStrLen += strlen(chip::Crypto::kVIDPrefixForCNEncoding);
+
+                VerifyOrReturnError(Encoding::Uint16ToHex(vid, &cnAttrStr[cnAttrStrLen], chip::Crypto::kVIDandPIDHexLength,
+                                                          Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                    false);
+                cnAttrStrLen += chip::Crypto::kVIDandPIDHexLength;
+            }
+
+            if (subjectPID != 0)
+            {
+                // Add space to separate from the previous string.
+                if (cnAttrStrLen > 0)
+                {
+                    VerifyOrReturnError((cnAttrStrLen + 1) <= sizeof(cnAttrStr), false);
+                    cnAttrStr[cnAttrStrLen++] = ' ';
+                }
+
+                VerifyOrReturnError((cnAttrStrLen + strlen(chip::Crypto::kPIDPrefixForCNEncoding) +
+                                     chip::Crypto::kVIDandPIDHexLength) <= sizeof(cnAttrStr),
+                                    false);
+
+                memcpy(&cnAttrStr[cnAttrStrLen], chip::Crypto::kPIDPrefixForCNEncoding,
+                       strlen(chip::Crypto::kPIDPrefixForCNEncoding));
+                cnAttrStrLen += strlen(chip::Crypto::kPIDPrefixForCNEncoding);
+
+                VerifyOrReturnError(Encoding::Uint16ToHex(pid, &cnAttrStr[cnAttrStrLen], chip::Crypto::kVIDandPIDHexLength,
+                                                          Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                    false);
+                cnAttrStrLen += chip::Crypto::kVIDandPIDHexLength;
+            }
+        }
+
+        // Add common name attribute to the certificate subject DN.
+        if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(newCert), NID_commonName, MBSTRING_UTF8,
+                                        reinterpret_cast<uint8_t *>(cnAttrStr), static_cast<int>(cnAttrStrLen), -1, 0))
+        {
+            ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
+        }
+    }
+
+    if (!encodeVIDandPIDasCN)
+    {
+        // Add VID attribute to the certificate subject DN.
+        if (subjectVID != VendorId::NotSpecified)
+        {
+            char chipAttrStr[chip::Crypto::kVIDandPIDHexLength];
+            VerifyOrReturnError(Encoding::Uint16ToHex(vid, chipAttrStr, chip::Crypto::kVIDandPIDHexLength,
+                                                      Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                false);
+
+            if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(newCert), gNIDChipAttAttrVID, MBSTRING_UTF8,
+                                            reinterpret_cast<unsigned char *>(chipAttrStr), sizeof(chipAttrStr), -1, 0))
+            {
+                ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
+            }
+        }
+
+        // Add PID attribute to the certificate subject DN.
+        if (subjectPID != 0)
+        {
+            char chipAttrStr[chip::Crypto::kVIDandPIDHexLength];
+            VerifyOrReturnError(Encoding::Uint16ToHex(pid, chipAttrStr, chip::Crypto::kVIDandPIDHexLength,
+                                                      Encoding::HexFlags::kUppercase) == CHIP_NO_ERROR,
+                                false);
+
+            if (!X509_NAME_add_entry_by_NID(X509_get_subject_name(newCert), gNIDChipAttAttrPID, MBSTRING_UTF8,
+                                            reinterpret_cast<unsigned char *>(chipAttrStr), sizeof(chipAttrStr), -1, 0))
+            {
+                ReportOpenSSLErrorAndExit("X509_NAME_add_entry_by_NID", res = false);
+            }
+        }
+    }
+
+    // Set the issuer name for the certificate. In the case of a self-signed cert, this will be
+    // the new cert's subject name.
+    if (!X509_set_issuer_name(newCert, X509_get_subject_name(caCert)))
+    {
+        ReportOpenSSLErrorAndExit("X509_set_issuer_name", res = false);
+    }
+
+    if (certConfig.IsExtensionBasicPresent())
+    {
+        std::string basicConstraintsExt;
+
+        if (certConfig.IsExtensionBasicCriticalPresent())
+        {
+            if (certConfig.IsExtensionBasicCritical())
+            {
+                basicConstraintsExt += "critical";
+            }
+        }
+
+        if (certConfig.IsExtensionBasicCAPresent())
+        {
+            if (!basicConstraintsExt.empty())
+            {
+                basicConstraintsExt += ",";
+            }
+            if ((certConfig.IsExtensionBasicCACorrect() && attCertType == kAttCertType_DAC) ||
+                (!certConfig.IsExtensionBasicCACorrect() && attCertType != kAttCertType_DAC))
+            {
+                basicConstraintsExt += "CA:FALSE";
+            }
+            else
+            {
+                basicConstraintsExt += "CA:TRUE";
+            }
+        }
+
+        if (certConfig.IsExtensionBasicPathLenPresent(attCertType) || !certConfig.IsExtensionBasicCAPresent())
+        {
+            if (!basicConstraintsExt.empty())
+            {
+                basicConstraintsExt += ",";
+            }
+            basicConstraintsExt.append("pathlen:" + std::to_string(certConfig.GetExtensionBasicPathLenValue(attCertType)));
+        }
+
+        res = AddExtension(newCert, NID_basic_constraints, basicConstraintsExt.c_str());
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionKeyUsagePresent())
+    {
+        std::string keyUsageExt;
+
+        if (certConfig.IsExtensionKeyUsageCriticalPresent())
+        {
+            if (certConfig.IsExtensionKeyUsageCritical())
+            {
+                keyUsageExt += "critical";
+            }
+        }
+
+        if ((certConfig.IsExtensionKeyUsageDigitalSigCorrect() && attCertType == kAttCertType_DAC) ||
+            (!certConfig.IsExtensionKeyUsageDigitalSigCorrect() && attCertType != kAttCertType_DAC))
+        {
+            if (!keyUsageExt.empty())
+            {
+                keyUsageExt += ",";
+            }
+            keyUsageExt += "digitalSignature";
+        }
+
+        if ((certConfig.IsExtensionKeyUsageKeyCertSignCorrect() && attCertType != kAttCertType_DAC) ||
+            (!certConfig.IsExtensionKeyUsageKeyCertSignCorrect() && attCertType == kAttCertType_DAC))
+        {
+            if (!keyUsageExt.empty())
+            {
+                keyUsageExt += ",";
+            }
+            keyUsageExt += "keyCertSign";
+        }
+
+        if ((certConfig.IsExtensionKeyUsageCRLSignCorrect() && attCertType != kAttCertType_DAC) ||
+            (!certConfig.IsExtensionKeyUsageCRLSignCorrect() && attCertType == kAttCertType_DAC))
+        {
+            if (!keyUsageExt.empty())
+            {
+                keyUsageExt += ",";
+            }
+            keyUsageExt += "cRLSign";
+        }
+
+        // In test mode only: just add an extra extension flag to prevent empty extantion.
+        if (certConfig.IsErrorTestCaseEnabled() && (keyUsageExt.empty() || (keyUsageExt.compare("critical") == 0)))
+        {
+            if (!keyUsageExt.empty())
+            {
+                keyUsageExt += ",";
+            }
+            keyUsageExt += "keyEncipherment";
+        }
+
+        res = AddExtension(newCert, NID_key_usage, keyUsageExt.c_str());
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionSKIDPresent())
+    {
+        // Add a subject key id extension for the certificate.
+        res = AddSubjectKeyId(newCert);
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionAKIDPresent())
+    {
+        // Add the authority key id extension from the signing certificate.
+        res = AddAuthorityKeyId(newCert, caCert);
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionExtendedKeyUsagePresent())
+    {
+        // Add optional Extended Key Usage extentsion.
+        res = AddExtension(newCert, NID_ext_key_usage, "critical,clientAuth,serverAuth");
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionAuthorityInfoAccessPresent())
+    {
+        // Add optional Authority Informational Access extentsion.
+        res = AddExtension(newCert, NID_info_access, "OCSP;URI:http://ocsp.example.com/");
+        VerifyTrueOrExit(res);
+    }
+
+    if (certConfig.IsExtensionSubjectAltNamePresent())
+    {
+        // Add optional Subject Alternative Name extentsion.
+        res = AddExtension(newCert, NID_subject_alt_name, "DNS:test.com");
+        VerifyTrueOrExit(res);
+    }
+
+    // Sign the new certificate.
+    if (!X509_sign(newCert, caKey, certConfig.GetSignatureAlgorithm()))
     {
         ReportOpenSSLErrorAndExit("X509_sign", res = false);
     }

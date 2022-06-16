@@ -26,13 +26,12 @@
 
 #include <app/InteractionModelEngine.h>
 #include <controller/CHIPCluster.h>
-#include <protocols/temp_zcl/TempZCL.h>
-#include <support/CodeUtils.h>
+#include <lib/support/CodeUtils.h>
 
 namespace chip {
 namespace Controller {
 
-CHIP_ERROR ClusterBase::Associate(Device * device, EndpointId endpoint)
+CHIP_ERROR ClusterBase::Associate(DeviceProxy * device, EndpointId endpoint)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
     // TODO: Check if the device supports mCluster at the requested endpoint
@@ -46,43 +45,6 @@ CHIP_ERROR ClusterBase::Associate(Device * device, EndpointId endpoint)
 void ClusterBase::Dissociate()
 {
     mDevice = nullptr;
-}
-
-CHIP_ERROR ClusterBase::SendCommand(uint8_t seqNum, chip::System::PacketBufferHandle && payload,
-                                    Callback::Cancelable * onSuccessCallback, Callback::Cancelable * onFailureCallback)
-{
-    CHIP_ERROR err = CHIP_NO_ERROR;
-
-    VerifyOrExit(mDevice != nullptr, err = CHIP_ERROR_INCORRECT_STATE);
-    VerifyOrExit(!payload.IsNull(), err = CHIP_ERROR_INTERNAL);
-
-    if (onSuccessCallback != nullptr || onFailureCallback != nullptr)
-    {
-        mDevice->AddResponseHandler(seqNum, onSuccessCallback, onFailureCallback);
-    }
-
-    err = mDevice->SendMessage(Protocols::TempZCL::MsgType::TempZCLRequest, std::move(payload));
-    SuccessOrExit(err);
-
-exit:
-    if (err != CHIP_NO_ERROR)
-    {
-        ChipLogError(Controller, "Failed in sending cluster command. Err %d", err);
-        mDevice->CancelResponseHandler(seqNum);
-    }
-
-    return err;
-}
-
-CHIP_ERROR ClusterBase::RequestAttributeReporting(AttributeId attributeId, Callback::Cancelable * onReportCallback)
-{
-    CHIP_ERROR err = CHIP_NO_ERROR;
-
-    VerifyOrExit(onReportCallback != nullptr, err = CHIP_ERROR_INVALID_ARGUMENT);
-    mDevice->AddReportHandler(mEndpoint, mClusterId, attributeId, onReportCallback);
-
-exit:
-    return err;
 }
 
 } // namespace Controller

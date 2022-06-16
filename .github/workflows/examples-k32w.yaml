@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Build example - K32W
+name: Build example - K32W with SE051
 
 on:
     push:
     pull_request:
+
+concurrency:
+    group: ${{ github.ref }}-${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.event.number) || (github.event_name == 'workflow_dispatch' && github.run_number) || github.sha }}
+    cancel-in-progress: true
 
 jobs:
     k32w:
@@ -30,48 +34,68 @@ jobs:
         if: github.actor != 'restyled-io[bot]'
 
         container:
-            image: connectedhomeip/chip-build-k32w:0.4.23
+            image: connectedhomeip/chip-build-k32w:0.5.79
             volumes:
                 - "/tmp/bloat_reports:/tmp/bloat_reports"
-                - "/tmp/output_binaries:/tmp/output_binaries"
         steps:
-            - name: Checkout
-              uses: actions/checkout@v2
-              # Fetch depth 0 to get all history and be able to check mergepoint for bloat report
+            - uses: Wandalen/wretry.action@v1.0.15
+              name: Checkout
               with:
-                  fetch-depth: 0
-                  submodules: true
-#            - name: Initialize CodeQL
-#              uses: github/codeql-action/init@v1
-#              with:
-#                  languages: "cpp"
-#                  queries: +security-and-quality
-            - name: Build example K32W Lock App
-              timeout-minutes: 5
-              run: scripts/examples/k32w_example.sh
-                   examples/lock-app/k32w out/lock_app_debug
-            - name: Build example K32W Lighting App
-              timeout-minutes: 5
-              run: scripts/examples/k32w_example.sh
-                   examples/lighting-app/k32w out/lighting_app_debug
-            - name: Binary artifact suffix
-              id: outsuffix
-              uses: haya14busa/action-cond@v1.0.0
-              with:
-                  cond: ${{ github.event.pull_request.number == '' }}
-                  if_true: "${{ github.sha }}"
-                  if_false: "pull-${{ github.event.pull_request.number }}"
-            - name: Uploading Binaries
+                  action: actions/checkout@v3
+                  with: |
+                      token: ${{ github.token }}
+                  attempt_limit: 3
+                  attempt_delay: 2000
+            - name: Checkout submodules
+              run: scripts/checkout_submodules.py --shallow --platform k32w0
+
+            - name: Set up environment for size reports
+              if: ${{ !env.ACT }}
+              env:
+                  GH_CONTEXT: ${{ toJson(github) }}
+              run: scripts/tools/memory/gh_sizes_environment.py "${GH_CONTEXT}"
+
+            - name: Bootstrap
+              timeout-minutes: 25
+              run: scripts/build/gn_bootstrap.sh
+            - name: Uploading bootstrap logs
               uses: actions/upload-artifact@v2
+              if: ${{ always() }} && ${{ !env.ACT }}
               with:
-                  name:
-                      ${{ env.BUILD_TYPE }}-example-build-${{
-                      steps.outsuffix.outputs.value }}
+                  name: bootstrap-logs
                   path: |
-                      out/lock_app_debug/chip-k32w061-lock-example.out
-                      out/lock_app_debug/chip-k32w061-lock-example.out.map
-            - name: Remove third_party binaries for CodeQL Analysis
-              run: find out -type d -name "third_party" -exec rm -rf {} +
-#            - name: Perform CodeQL Analysis
-#              if: ${{ github.event_name == 'push' }}
-#              uses: github/codeql-action/analyze@v1
+                      .environment/gn_out/.ninja_log
+                      .environment/pigweed-venv/*.log
+            - name: Build examples
+              timeout-minutes: 30
+              run: |
+                  scripts/run_in_build_env.sh "\
+                      ./scripts/build/build_examples.py \
+                      --target k32w-light-ota-se \
+                      --target k32w-light-release-no-ota \
+                      --target k32w-lock-low-power-release \
+                      --target k32w-shell-release \
+                      build \
+                      --copy-artifacts-to out/artifacts \
+                  "
+            - name: Get light size stats
+              timeout-minutes: 5
+              run: |
+                  .environment/pigweed-venv/bin/python3 scripts/tools/memory/gh_sizes.py \
+                    k32w k32w061+release light \
+                    out/artifacts/k32w-light-release-no-ota/chip-k32w061-light-example \
+                    /tmp/bloat_reports/
+            - name: Get lock size stats
+              timeout-minutes: 5
+              run: |
+                  .environment/pigweed-venv/bin/python3 scripts/tools/memory/gh_sizes.py \
+                    k32w k32w061+release lock \
+                    out/artifacts/k32w-lock-low-power-release/chip-k32w061-lock-example \
+                    /tmp/bloat_reports/
+            - name: Uploading Size Reports
+              uses: actions/upload-artifact@v2
+              if: ${{ !env.ACT }}
+              with:
+                  name: Size,K32W-Examples,${{ env.GH_EVENT_PR }},${{ env.GH_EVENT_HASH }},${{ env.GH_EVENT_PARENT }},${{ github.event_name }}
+                  path: |
+                      /tmp/bloat_reports/

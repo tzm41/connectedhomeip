@@ -21,44 +21,32 @@
  */
 
 #include "AppConfig.h"
-#include "BoltLockManager.h"
+#include "LockManager.h"
+#include <platform/CHIPDeviceLayer.h>
 
-#include <app/chip-zcl-zpro-codec.h>
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/util/af-types.h>
-#include <app/util/attribute-storage.h>
-#include <app/util/util.h>
+#include <app-common/zap-generated/ids/Attributes.h>
+#include <app-common/zap-generated/ids/Clusters.h>
+#include <app/ConcreteAttributePath.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 using namespace ::chip;
+using namespace ::chip::app::Clusters;
+using namespace ::chip::DeviceLayer::Internal;
 
-void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId, AttributeId attributeId, uint8_t mask,
-                                        uint16_t manufacturerCode, uint8_t type, uint8_t size, uint8_t * value)
+void MatterPostAttributeChangeCallback(const chip::app::ConcreteAttributePath & attributePath, uint8_t type, uint16_t size,
+                                       uint8_t * value)
 {
-    if (clusterId != ZCL_ON_OFF_CLUSTER_ID)
-    {
-        EFR32_LOG("Unknown cluster ID: %d", clusterId);
-        return;
-    }
+    ClusterId clusterId     = attributePath.mClusterId;
+    AttributeId attributeId = attributePath.mAttributeId;
+    ChipLogProgress(Zcl, "Cluster callback: " ChipLogFormatMEI, ChipLogValueMEI(clusterId));
 
-    if (attributeId != ZCL_ON_OFF_ATTRIBUTE_ID)
+    if (clusterId == DoorLock::Id && attributeId == DoorLock::Attributes::LockState::Id)
     {
-        EFR32_LOG("Unknown attribute ID: %d", attributeId);
-        return;
-    }
-
-    if (*value)
-    {
-        BoltLockMgr().InitiateAction(AppEvent::kEventType_Lock, BoltLockManager::LOCK_ACTION);
-    }
-    else
-    {
-        BoltLockMgr().InitiateAction(AppEvent::kEventType_Lock, BoltLockManager::UNLOCK_ACTION);
+        ChipLogProgress(Zcl, "Door lock cluster: " ChipLogFormatMEI, ChipLogValueMEI(clusterId));
     }
 }
 
-/** @brief OnOff Cluster Init
+/** @brief DoorLock Cluster Init
  *
  * This function is called when a specific cluster is initialized. It gives the
  * application an opportunity to take care of cluster initialization procedures.
@@ -66,14 +54,87 @@ void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId
  *
  * @param endpoint   Ver.: always
  *
- * TODO Issue #3841
- * emberAfOnOffClusterInitCallback happens before the stack initialize the cluster
- * attributes to the default value.
- * The logic here expects something similar to the deprecated Plugins callback
- * emberAfPluginOnOffClusterServerPostInitCallback.
- *
  */
-void emberAfOnOffClusterInitCallback(EndpointId endpoint)
+void emberAfDoorLockClusterInitCallback(EndpointId endpoint)
 {
     // TODO: implement any additional Cluster Server init actions
+}
+
+bool emberAfPluginDoorLockOnDoorLockCommand(chip::EndpointId endpointId, const Optional<ByteSpan> & pinCode, DlOperationError & err)
+{
+    ChipLogProgress(Zcl, "Door Lock App: Lock Command endpoint=%d", endpointId);
+    bool status = LockMgr().Lock(endpointId, pinCode, err);
+    if (status == true)
+    {
+        LockMgr().InitiateAction(AppEvent::kEventType_Lock, LockManager::LOCK_ACTION);
+    }
+    return status;
+}
+
+bool emberAfPluginDoorLockOnDoorUnlockCommand(chip::EndpointId endpointId, const Optional<ByteSpan> & pinCode,
+                                              DlOperationError & err)
+{
+    ChipLogProgress(Zcl, "Door Lock App: Unlock Command endpoint=%d", endpointId);
+    bool status = LockMgr().Unlock(endpointId, pinCode, err);
+    if (status == true)
+    {
+        LockMgr().InitiateAction(AppEvent::kEventType_Lock, LockManager::UNLOCK_ACTION);
+    }
+
+    return status;
+}
+
+bool emberAfPluginDoorLockGetCredential(chip::EndpointId endpointId, uint16_t credentialIndex, DlCredentialType credentialType,
+                                        EmberAfPluginDoorLockCredentialInfo & credential)
+{
+    return LockMgr().GetCredential(endpointId, credentialIndex, credentialType, credential);
+}
+
+bool emberAfPluginDoorLockSetCredential(chip::EndpointId endpointId, uint16_t credentialIndex, chip::FabricIndex creator,
+                                        chip::FabricIndex modifier, DlCredentialStatus credentialStatus,
+                                        DlCredentialType credentialType, const chip::ByteSpan & credentialData)
+{
+    return LockMgr().SetCredential(endpointId, credentialIndex, creator, modifier, credentialStatus, credentialType,
+                                   credentialData);
+}
+
+bool emberAfPluginDoorLockGetUser(chip::EndpointId endpointId, uint16_t userIndex, EmberAfPluginDoorLockUserInfo & user)
+{
+    return LockMgr().GetUser(endpointId, userIndex, user);
+}
+
+bool emberAfPluginDoorLockSetUser(chip::EndpointId endpointId, uint16_t userIndex, chip::FabricIndex creator,
+                                  chip::FabricIndex modifier, const chip::CharSpan & userName, uint32_t uniqueId,
+                                  DlUserStatus userStatus, DlUserType usertype, DlCredentialRule credentialRule,
+                                  const DlCredential * credentials, size_t totalCredentials)
+{
+
+    return LockMgr().SetUser(endpointId, userIndex, creator, modifier, userName, uniqueId, userStatus, usertype, credentialRule,
+                             credentials, totalCredentials);
+}
+
+// TODO: These functions will be supported by door-lock-server in the future. These are set to return failure until implemented.
+DlStatus emberAfPluginDoorLockGetSchedule(chip::EndpointId endpointId, uint8_t weekdayIndex, uint16_t userIndex,
+                                          EmberAfPluginDoorLockWeekDaySchedule & schedule)
+{
+    return DlStatus::kFailure;
+}
+
+DlStatus emberAfPluginDoorLockGetSchedule(chip::EndpointId endpointId, uint8_t yearDayIndex, uint16_t userIndex,
+                                          EmberAfPluginDoorLockYearDaySchedule & schedule)
+{
+    return DlStatus::kFailure;
+}
+
+DlStatus emberAfPluginDoorLockSetSchedule(chip::EndpointId endpointId, uint8_t weekdayIndex, uint16_t userIndex,
+                                          DlScheduleStatus status, DlDaysMaskMap daysMask, uint8_t startHour, uint8_t startMinute,
+                                          uint8_t endHour, uint8_t endMinute)
+{
+    return DlStatus::kFailure;
+}
+
+DlStatus emberAfPluginDoorLockSetSchedule(chip::EndpointId endpointId, uint8_t yearDayIndex, uint16_t userIndex,
+                                          DlScheduleStatus status, uint32_t localStartTime, uint32_t localEndTime)
+{
+    return DlStatus::kFailure;
 }

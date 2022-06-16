@@ -15,6 +15,7 @@
  *    limitations under the License.
  */
 
+#include <cstdint>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -28,20 +29,19 @@
 #include <lib/support/Base64.h>
 #include <lib/support/CHIPArgParser.hpp>
 #include <lib/support/CodeUtils.h>
-#include <lib/support/RandUtils.h>
 
 chip::Shell::Engine sShellBase64Commands;
 
 namespace chip {
 namespace Shell {
 
-static int Base64HelpHandler(int argc, char ** argv)
+static CHIP_ERROR Base64HelpHandler(int argc, char ** argv)
 {
     sShellBase64Commands.ForEachCommand(PrintCommandHelp, nullptr);
-    return 0;
+    return CHIP_NO_ERROR;
 }
 
-static int Base64DecodeHandler(int argc, char ** argv)
+static CHIP_ERROR Base64DecodeHandler(int argc, char ** argv)
 {
     streamer_t * sout = streamer_get();
     uint32_t binarySize;
@@ -49,12 +49,13 @@ static int Base64DecodeHandler(int argc, char ** argv)
 
     VerifyOrReturnError(argc > 0, CHIP_ERROR_INVALID_ARGUMENT);
     binarySize = Base64Decode(argv[0], strlen(argv[0]), binary);
+    VerifyOrReturnError(binarySize != UINT16_MAX, CHIP_ERROR_INVALID_ARGUMENT);
     streamer_print_hex(sout, binary, binarySize);
     streamer_printf(sout, "\r\n");
     return CHIP_NO_ERROR;
 }
 
-static int Base64EncodeHandler(int argc, char ** argv)
+static CHIP_ERROR Base64EncodeHandler(int argc, char ** argv)
 {
     streamer_t * sout = streamer_get();
     char base64[256];
@@ -68,17 +69,13 @@ static int Base64EncodeHandler(int argc, char ** argv)
     return CHIP_NO_ERROR;
 }
 
-static int Base64Dispatch(int argc, char ** argv)
+static CHIP_ERROR Base64Dispatch(int argc, char ** argv)
 {
-    CHIP_ERROR error = CHIP_NO_ERROR;
-
     if (argc == 0)
     {
-        Base64HelpHandler(argc, argv);
-        return error;
+        return Base64HelpHandler(argc, argv);
     }
-    error = sShellBase64Commands.ExecCommand(argc, argv);
-    return error;
+    return sShellBase64Commands.ExecCommand(argc, argv);
 }
 
 void RegisterBase64Commands()

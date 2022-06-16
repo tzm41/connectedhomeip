@@ -24,8 +24,8 @@
 #include "Types.h"
 
 #include <errno.h>
+#include <lib/support/logging/CHIPLogging.h>
 #include <pthread.h>
-#include <support/logging/CHIPLogging.h>
 
 namespace chip {
 namespace DeviceLayer {
@@ -78,7 +78,7 @@ ChipDeviceScanner::~ChipDeviceScanner()
     StopScan();
 
     // In case the timeout timer is still active
-    chip::DeviceLayer::SystemLayer.CancelTimer(TimerExpiredCallback, this);
+    chip::DeviceLayer::SystemLayer().CancelTimer(TimerExpiredCallback, this);
 
     g_object_unref(mManager);
     g_object_unref(mCancellable);
@@ -117,21 +117,27 @@ std::unique_ptr<ChipDeviceScanner> ChipDeviceScanner::Create(BluezAdapter1 * ada
     return std::make_unique<ChipDeviceScanner>(manager.get(), adapter, cancellable.get(), delegate);
 }
 
-CHIP_ERROR ChipDeviceScanner::StartScan(unsigned timeoutMs)
+CHIP_ERROR ChipDeviceScanner::StartScan(System::Clock::Timeout timeout)
 {
     ReturnErrorCodeIf(mIsScanning, CHIP_ERROR_INCORRECT_STATE);
 
     ReturnErrorOnFailure(MainLoop::Instance().EnsureStarted());
 
     mIsScanning = true; // optimistic, to allow all callbacks to check this
-    if (!MainLoop::Instance().Schedule(MainLoopStartScan, this))
+    if (!MainLoop::Instance().ScheduleAndWait(MainLoopStartScan, this))
     {
         ChipLogError(Ble, "Failed to schedule BLE scan start.");
         mIsScanning = false;
         return CHIP_ERROR_INTERNAL;
     }
 
-    CHIP_ERROR err = chip::DeviceLayer::SystemLayer.StartTimer(timeoutMs, TimerExpiredCallback, static_cast<void *>(this));
+    if (!mIsScanning)
+    {
+        ChipLogError(Ble, "Failed to start BLE scan.");
+        return CHIP_ERROR_INTERNAL;
+    }
+
+    CHIP_ERROR err = chip::DeviceLayer::SystemLayer().StartTimer(timeout, TimerExpiredCallback, static_cast<void *>(this));
 
     if (err != CHIP_NO_ERROR)
     {
@@ -143,7 +149,7 @@ CHIP_ERROR ChipDeviceScanner::StartScan(unsigned timeoutMs)
     return CHIP_NO_ERROR;
 }
 
-void ChipDeviceScanner::TimerExpiredCallback(chip::System::Layer * layer, void * appState, chip::System::Error error)
+void ChipDeviceScanner::TimerExpiredCallback(chip::System::Layer * layer, void * appState)
 {
     static_cast<ChipDeviceScanner *>(appState)->StopScan();
 }
@@ -271,6 +277,24 @@ int ChipDeviceScanner::MainLoopStartScan(ChipDeviceScanner * self)
     for (BluezObject & object : BluezObjectList(self->mManager))
     {
         self->RemoveDevice(bluez_object_get_device1(&object));
+    }
+
+    // Search for LE only.
+    // Do NOT add filtering by UUID as it is done by the following kernel function:
+    // https://github.com/torvalds/linux/blob/bdb575f872175ed0ecf2638369da1cb7a6e86a14/net/bluetooth/mgmt.c#L9258.
+    // The function requires that devices advertise its services' UUIDs in UUID16/32/128 fields
+    // while the Matter specification requires only FLAGS (0x01) and SERVICE_DATA_16 (0x16) fields
+    // in the advertisement packets.
+    GVariantBuilder filterBuilder;
+    g_variant_builder_init(&filterBuilder, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&filterBuilder, "{sv}", "Transport", g_variant_new_string("le"));
+    GVariant * filter = g_variant_builder_end(&filterBuilder);
+
+    if (!bluez_adapter1_call_set_discovery_filter_sync(self->mAdapter, filter, self->mCancellable, &error))
+    {
+        // Not critical: ignore if fails
+        ChipLogError(Ble, "Failed to set discovery filters: %s", error->message);
+        g_clear_error(&error);
     }
 
     ChipLogProgress(Ble, "BLE initiating scan.");

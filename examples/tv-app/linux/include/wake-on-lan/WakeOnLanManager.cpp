@@ -17,52 +17,26 @@
  */
 
 #include "WakeOnLanManager.h"
-
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/attribute-type.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/util/af.h>
-#include <app/util/basic-types.h>
-
-#include <inipp/inipp.h>
-
 #include <fstream>
 #include <iostream>
-#include <sstream>
-using namespace std;
+#include <string>
 
-CHIP_ERROR WakeOnLanManager::Init()
+using namespace chip;
+using namespace chip::app::Clusters::WakeOnLan;
+
+std::string getMacAddress()
 {
-    CHIP_ERROR err                                       = CHIP_NO_ERROR;
-    EndpointConfigurationStorage & endpointConfiguration = EndpointConfigurationStorage::GetInstance();
-    err                                                  = endpointConfiguration.Init();
-    SuccessOrExit(err);
-    es = &endpointConfiguration;
-exit:
-    return err;
+    std::ifstream input("/sys/class/net/eth0/address");
+    std::string line;
+    std::getline(input, line);
+    return line;
 }
 
-void WakeOnLanManager::store(chip::EndpointId endpoint, char macAddress[17])
+CHIP_ERROR WakeOnLanManager::HandleGetMacAddress(chip::app::AttributeValueEncoder & aEncoder)
 {
-    EmberAfStatus macAddressStatus =
-        emberAfWriteServerAttribute(endpoint, ZCL_WAKE_ON_LAN_CLUSTER_ID, ZCL_WAKE_ON_LAN_MAC_ADDRESS_ATTRIBUTE_ID,
-                                    (uint8_t *) &macAddress, ZCL_CHAR_STRING_ATTRIBUTE_TYPE);
-    if (macAddressStatus != EMBER_ZCL_STATUS_SUCCESS)
-    {
-        emberAfWakeOnLanClusterPrintln("Failed to store mac address attribute.");
-    }
-}
-
-void WakeOnLanManager::setMacAddress(chip::EndpointId endpoint, char * macAddress)
-{
-    char address[17];
-    uint16_t size = static_cast<uint16_t>(sizeof(address));
-
-    string section = "endpoint" + std::to_string(endpoint);
-    CHIP_ERROR err = es->get(section, "macAddress", macAddress, size);
-    if (err != CHIP_NO_ERROR)
-    {
-        emberAfWakeOnLanClusterPrintln("Failed to get app catalog mac address. ERR:%s", chip::ErrorStr(err));
-    }
+#if CHIP_ENABLE_WAKE_ON_LAN
+    return aEncoder.Encode(CharSpan::fromCharString(getMacAddress().c_str()));
+#else
+    return aEncoder.Encode(CharSpan::fromCharString("00:00:00:00:00"));
+#endif // CHIP_ENABLE_WAKE_ON_LAN
 }

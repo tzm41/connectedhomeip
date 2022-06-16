@@ -18,24 +18,10 @@
 
 #pragma once
 
-#include <app/util/af-types.h>
-#include <core/CHIPError.h>
+#include <app/clusters/wake-on-lan-server/wake-on-lan-server.h>
 
-#include "../endpoint-configuration/EndpointConfigurationStorage.h"
-
-class WakeOnLanManager
+class WakeOnLanManager : public chip::app::Clusters::WakeOnLan::Delegate
 {
 public:
-    CHIP_ERROR Init();
-    void store(chip::EndpointId endpoint, char macAddress[17]);
-    void setMacAddress(chip::EndpointId endpoint, char * macAddress);
-
-    static WakeOnLanManager & GetInstance()
-    {
-        static WakeOnLanManager instance;
-        return instance;
-    }
-
-private:
-    EndpointConfigurationStorage * es = nullptr;
+    CHIP_ERROR HandleGetMacAddress(chip::app::AttributeValueEncoder & aEncoder) override;
 };

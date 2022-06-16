@@ -52,25 +52,32 @@ for define in "${defines[@]}"; do
 
     # skip over those that GN does for us
     case "$define" in
-        CHIP_DEVICE_LAYER*)
-            continue
-            ;;
-        CHIP_*_CONFIG_INCLUDE)
-            continue
-            ;;
-        CHIP_SYSTEM_CONFIG_*)
-            continue
-            ;;
-        CONFIG_NETWORK_LAYER*)
-            continue
-            ;;
-        CHIP_CRYPTO_*)
+        CHIP_HAVE_CONFIG_H)
             continue
             ;;
     esac
     target_defines+=,\"${define//\"/\\\"}\"
 done
 target_defines=[${target_defines:1}]
+
+declare target_cpu=
+case $PLATFORM_PREFERRED_ARCH in
+    i386)
+        target_cpu=x86
+        ;;
+    x86_64)
+        target_cpu=x64
+        ;;
+    armv7)
+        target_cpu=arm
+        ;;
+    arm64)
+        target_cpu=arm64
+        ;;
+    *)
+        echo >&2
+        ;;
+esac
 
 declare target_cflags='"-target","'"$PLATFORM_PREFERRED_ARCH"'-'"$LLVM_TARGET_TRIPLE_VENDOR"'-'"$LLVM_TARGET_TRIPLE_OS_VERSION"'"'
 
@@ -89,11 +96,8 @@ declare -a args=(
     'chip_crypto="mbedtls"'
     'chip_build_tools=false'
     'chip_build_tests=false'
-    'chip_ble_project_config_include=""'
-    'chip_device_project_config_include=""'
-    'chip_inet_project_config_include=""'
-    'chip_system_project_config_include=""'
-    'target_cpu="'"$PLATFORM_PREFERRED_ARCH"'"'
+    'chip_disable_platform_kvs=true'
+    'target_cpu="'"$target_cpu"'"'
     'target_defines='"$target_defines"
     'target_cflags=['"$target_cflags"']'
 )
@@ -110,8 +114,6 @@ declare -a args=(
 [[ $PLATFORM_FAMILY_NAME == macOS ]] && {
     args+=(
         'target_os="mac"'
-        'import("//config/standalone/args.gni")'
-        'chip_project_config_include_dirs=["'"$CHIP_ROOT"'/config/standalone"]'
     )
 }
 

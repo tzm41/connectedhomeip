@@ -15,45 +15,19 @@
  *    limitations under the License.
  */
 
-#include <support/logging/CHIPLogging.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 #include "AppConfig.h"
+#include "AppTask.h"
 #include "PumpManager.h"
 
-#include <app/chip-zcl-zpro-codec.h>
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/enums.h>
-#include <app/util/af-types.h>
-#include <app/util/attribute-storage.h>
-#include <app/util/util.h>
+#include <app-common/zap-generated/ids/Attributes.h>
+#include <app-common/zap-generated/ids/Clusters.h>
+#include <app/ConcreteAttributePath.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 using namespace ::chip;
-
-void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId, AttributeId attributeId, uint8_t mask,
-                                        uint16_t manufacturerCode, uint8_t type, uint8_t size, uint8_t * value)
-{
-    if (clusterId != ZCL_ON_OFF_CLUSTER_ID)
-    {
-        ChipLogProgress(Zcl, "Unknown cluster ID: %d", clusterId);
-        return;
-    }
-
-    if (attributeId != ZCL_ON_OFF_ATTRIBUTE_ID)
-    {
-        ChipLogProgress(Zcl, "Unknown attribute ID: %d", attributeId);
-        return;
-    }
-
-    if (*value)
-    {
-        PumpMgr().InitiateAction(0, PumpManager::LOCK_ACTION);
-    }
-    else
-    {
-        PumpMgr().InitiateAction(0, PumpManager::UNLOCK_ACTION);
-    }
-}
+using namespace ::chip::app::Clusters;
 
 /** @brief OnOff Cluster Init
  *
@@ -72,5 +46,10 @@ void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId
  */
 void emberAfOnOffClusterInitCallback(EndpointId endpoint)
 {
-    // TODO: implement any additional Cluster Server init actions
+    GetAppTask().InitOnOffClusterState();
+}
+
+void emberAfPumpConfigurationAndControlClusterInitCallback(chip::EndpointId endpoint)
+{
+    GetAppTask().InitPCCClusterState();
 }

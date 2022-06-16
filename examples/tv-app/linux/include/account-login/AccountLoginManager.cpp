@@ -17,78 +17,48 @@
  */
 
 #include "AccountLoginManager.h"
-#include <app/Command.h>
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/attribute-type.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/common/gen/enums.h>
+#include <app/CommandHandler.h>
 #include <app/util/af.h>
 
 using namespace std;
+using namespace chip::app::Clusters::AccountLogin;
 
-bool AccountLoginManager::isUserLoggedIn(string requestTempAccountIdentifier, string requestSetupPin)
+AccountLoginManager::AccountLoginManager(const char * setupPin)
 {
-    for (auto it = accounts.cbegin(); it != accounts.cend(); ++it)
-    {
-        emberAfAccountLoginClusterPrintln("temporary account id: %s", it->first);
-        emberAfAccountLoginClusterPrintln("setup pin %s", it->second);
-    }
-
-    if (accounts.find(requestTempAccountIdentifier) != accounts.end())
-    {
-        bool found = accounts[requestTempAccountIdentifier] == requestSetupPin;
-        if (!found)
-        {
-            emberAfAccountLoginClusterPrintln("User is not logged in, failed to match request setup pin",
-                                              EMBER_ZCL_STATUS_NOT_AUTHORIZED);
-        }
-        return found;
-    }
-    else
-    {
-        emberAfAccountLoginClusterPrintln("User is not logged in, failed to find temp account identifier",
-                                          EMBER_ZCL_STATUS_NOT_AUTHORIZED);
-        return false;
-    }
+    CopyString(mSetupPin, sizeof(mSetupPin), setupPin);
 }
 
-void AccountLoginManager::setTempAccountIdentifierForPin(string tempAccountIdentifier, string setupPin)
+bool AccountLoginManager::HandleLogin(const CharSpan & tempAccountIdentifier, const CharSpan & setupPin)
 {
-    accounts[tempAccountIdentifier] = setupPin;
-}
+    string tempAccountIdentifierString(tempAccountIdentifier.data(), tempAccountIdentifier.size());
+    string setupPinString(setupPin.data(), setupPin.size());
+    ChipLogProgress(Zcl, "temporary account id: %s", tempAccountIdentifierString.c_str());
+    ChipLogProgress(Zcl, "setup pin %s", setupPinString.c_str());
 
-string AccountLoginManager::proxySetupPinRequest(string requestTempAccountIdentifier, chip::EndpointId endpoint)
-{
-    // TODO: Insert your code here to send temp account identifier request
-    return "HtempPin123";
-}
-
-bool emberAfAccountLoginClusterGetSetupPINCallback(chip::app::Command * command, unsigned char * tempAccountIdentifier)
-{
-    string tempAccountIdentifierString(reinterpret_cast<char *>(tempAccountIdentifier));
-
-    string responseSetupPin = AccountLoginManager().proxySetupPinRequest(tempAccountIdentifierString, emberAfCurrentEndpoint());
-    emberAfFillExternalBuffer((ZCL_CLUSTER_SPECIFIC_COMMAND | ZCL_FRAME_CONTROL_SERVER_TO_CLIENT), ZCL_ACCOUNT_LOGIN_CLUSTER_ID,
-                              ZCL_GET_SETUP_PIN_RESPONSE_COMMAND_ID, "s", &responseSetupPin);
-
-    EmberStatus status = emberAfSendResponse();
-    if (status != EMBER_SUCCESS)
+    if (strcmp(mSetupPin, setupPinString.c_str()) == 0)
     {
-        emberAfAccountLoginClusterPrintln("Failed to send %s: 0x%X", "GetSetupPIN", status);
+        ChipLogProgress(Zcl, "AccountLoginManager::HandleLogin success");
+        return true;
     }
-    AccountLoginManager().GetInstance().setTempAccountIdentifierForPin(tempAccountIdentifierString, responseSetupPin);
+
+    ChipLogProgress(Zcl, "AccountLoginManager::HandleLogin failed expected pin %s", mSetupPin);
+    return false;
+}
+
+bool AccountLoginManager::HandleLogout()
+{
+    // TODO: Insert your code here to send logout request
     return true;
 }
 
-bool emberAfAccountLoginClusterLoginCallback(chip::app::Command * command, unsigned char * tempAccountIdentifier,
-                                             unsigned char * tempSetupPin)
+void AccountLoginManager::HandleGetSetupPin(CommandResponseHelper<GetSetupPINResponse> & helper,
+                                            const CharSpan & tempAccountIdentifier)
 {
-    string tempAccountIdentifierString(reinterpret_cast<char *>(tempAccountIdentifier));
-    string tempSetupPinString(reinterpret_cast<char *>(tempSetupPin));
-    bool isUserLoggedIn  = AccountLoginManager().GetInstance().isUserLoggedIn(tempAccountIdentifierString, tempSetupPinString);
-    EmberAfStatus status = isUserLoggedIn ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_NOT_AUTHORIZED;
-    emberAfAccountLoginClusterPrintln("User is not authorized.", EMBER_ZCL_STATUS_NOT_AUTHORIZED);
-    emberAfSendImmediateDefaultResponse(status);
-    return true;
+    string tempAccountIdentifierString(tempAccountIdentifier.data(), tempAccountIdentifier.size());
+
+    GetSetupPINResponse response;
+    ChipLogProgress(Zcl, "temporary account id: %s returning pin: %s", tempAccountIdentifierString.c_str(), mSetupPin);
+
+    response.setupPIN = CharSpan::fromCharString(mSetupPin);
+    helper.Success(response);
 }

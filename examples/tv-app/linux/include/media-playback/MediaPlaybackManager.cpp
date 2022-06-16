@@ -16,189 +16,223 @@
  */
 
 #include "MediaPlaybackManager.h"
-#include <app/Command.h>
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/attribute-type.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/util/af.h>
-#include <iostream>
-
-#include <map>
-#include <string>
 
 using namespace std;
+using namespace chip::app::DataModel;
+using namespace chip::app::Clusters::MediaPlayback;
+using namespace chip::Uint8;
+using chip::CharSpan;
 
-CHIP_ERROR MediaPlaybackManager::Init()
+PlaybackStateEnum MediaPlaybackManager::HandleGetCurrentState()
 {
-    CHIP_ERROR err = CHIP_NO_ERROR;
-
-    // TODO: Store feature map once it is supported
-    map<string, bool> featureMap;
-    featureMap["AS"] = true;
-
-    SuccessOrExit(err);
-exit:
-    return err;
+    return mCurrentState;
 }
 
-static void writePlaybackState(chip::EndpointId endpoint, uint8_t playbackState)
+uint64_t MediaPlaybackManager::HandleGetStartTime()
 {
-    EmberAfStatus status =
-        emberAfWriteServerAttribute(endpoint, ZCL_MEDIA_PLAYBACK_CLUSTER_ID, ZCL_MEDIA_PLAYBACK_STATE_ATTRIBUTE_ID,
-                                    (uint8_t *) &playbackState, ZCL_INT8U_ATTRIBUTE_TYPE);
-    if (status != EMBER_ZCL_STATUS_SUCCESS)
-    {
-        emberAfMediaPlaybackClusterPrintln("Failed to store media playback attribute.");
-    }
+    return mStartTime;
 }
 
-static uint8_t readPlaybackStatus(chip::EndpointId endpoint)
+uint64_t MediaPlaybackManager::HandleGetDuration()
 {
-    uint8_t playbackState;
-    EmberAfStatus status =
-        emberAfReadServerAttribute(endpoint, ZCL_MEDIA_PLAYBACK_CLUSTER_ID, ZCL_MEDIA_PLAYBACK_STATE_ATTRIBUTE_ID,
-                                   (uint8_t *) &playbackState, sizeof(uint8_t));
-    if (status != EMBER_ZCL_STATUS_SUCCESS)
-    {
-        emberAfMediaPlaybackClusterPrintln("Failed to read media playback attribute.");
-    }
-
-    return playbackState;
+    return mDuration;
 }
 
-void MediaPlaybackManager::storeNewPlaybackState(chip::EndpointId endpoint, uint8_t newPlaybackState)
+CHIP_ERROR MediaPlaybackManager::HandleGetSampledPosition(AttributeValueEncoder & aEncoder)
 {
-    oldPlaybackState = readPlaybackStatus(endpoint);
+    return aEncoder.Encode(mPlaybackPosition);
+}
 
-    if (oldPlaybackState == newPlaybackState)
+float MediaPlaybackManager::HandleGetPlaybackSpeed()
+{
+    return mPlaybackSpeed;
+}
+
+uint64_t MediaPlaybackManager::HandleGetSeekRangeStart()
+{
+    return mStartTime;
+}
+
+uint64_t MediaPlaybackManager::HandleGetSeekRangeEnd()
+{
+    return mDuration;
+}
+
+void MediaPlaybackManager::HandlePlay(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    mCurrentState  = PlaybackStateEnum::kPlaying;
+    mPlaybackSpeed = 1;
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandlePause(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    mCurrentState  = PlaybackStateEnum::kPaused;
+    mPlaybackSpeed = 0;
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleStop(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    mCurrentState     = PlaybackStateEnum::kNotPlaying;
+    mPlaybackSpeed    = 0;
+    mPlaybackPosition = { 0, chip::app::DataModel::Nullable<uint64_t>(0) };
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleFastForward(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    if (mPlaybackSpeed == kPlaybackMaxForwardSpeed)
     {
+        // if already at max speed, return error
+        Commands::PlaybackResponse::Type response;
+        response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+        response.status = MediaPlaybackStatusEnum::kSpeedOutOfRange;
+        helper.Success(response);
         return;
+    }
+
+    mCurrentState  = PlaybackStateEnum::kPlaying;
+    mPlaybackSpeed = (mPlaybackSpeed <= 0 ? 1 : mPlaybackSpeed * 2);
+    if (mPlaybackSpeed > kPlaybackMaxForwardSpeed)
+    {
+        // don't exceed max speed
+        mPlaybackSpeed = kPlaybackMaxForwardSpeed;
+    }
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandlePrevious(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    mCurrentState     = PlaybackStateEnum::kPlaying;
+    mPlaybackSpeed    = 1;
+    mPlaybackPosition = { 0, chip::app::DataModel::Nullable<uint64_t>(0) };
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleRewind(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
+    // TODO: Insert code here
+    if (mPlaybackSpeed == kPlaybackMaxRewindSpeed)
+    {
+        // if already at max speed in reverse, return error
+        Commands::PlaybackResponse::Type response;
+        response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+        response.status = MediaPlaybackStatusEnum::kSpeedOutOfRange;
+        helper.Success(response);
+        return;
+    }
+
+    mCurrentState  = PlaybackStateEnum::kPlaying;
+    mPlaybackSpeed = (mPlaybackSpeed >= 0 ? -1 : mPlaybackSpeed * 2);
+    if (mPlaybackSpeed < kPlaybackMaxRewindSpeed)
+    {
+        // don't exceed max rewind speed
+        mPlaybackSpeed = kPlaybackMaxRewindSpeed;
+    }
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleSkipBackward(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper,
+                                              const uint64_t & deltaPositionMilliseconds)
+{
+    // TODO: Insert code here
+    uint64_t newPosition = (mPlaybackPosition.position.Value() > deltaPositionMilliseconds
+                                ? mPlaybackPosition.position.Value() - deltaPositionMilliseconds
+                                : 0);
+    mPlaybackPosition    = { 0, chip::app::DataModel::Nullable<uint64_t>(newPosition) };
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleSkipForward(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper,
+                                             const uint64_t & deltaPositionMilliseconds)
+{
+    // TODO: Insert code here
+    uint64_t newPosition = mPlaybackPosition.position.Value() + deltaPositionMilliseconds;
+    newPosition          = newPosition > mDuration ? mDuration : newPosition;
+    mPlaybackPosition    = { 0, chip::app::DataModel::Nullable<uint64_t>(newPosition) };
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleSeek(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper,
+                                      const uint64_t & positionMilliseconds)
+{
+    // TODO: Insert code here
+    if (positionMilliseconds > mDuration)
+    {
+        Commands::PlaybackResponse::Type response;
+        response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+        response.status = MediaPlaybackStatusEnum::kSeekOutOfRange;
+        helper.Success(response);
     }
     else
     {
-        writePlaybackState(endpoint, newPlaybackState);
+        mPlaybackPosition = { 0, chip::app::DataModel::Nullable<uint64_t>(positionMilliseconds) };
+
+        Commands::PlaybackResponse::Type response;
+        response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+        response.status = MediaPlaybackStatusEnum::kSuccess;
+        helper.Success(response);
     }
 }
 
-static void sendResponse(const char * responseName, chip::CommandId commandId, uint8_t mediaPlaybackStatus)
+void MediaPlaybackManager::HandleNext(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
 {
-    emberAfFillExternalBuffer((ZCL_CLUSTER_SPECIFIC_COMMAND | ZCL_FRAME_CONTROL_SERVER_TO_CLIENT), ZCL_MEDIA_PLAYBACK_CLUSTER_ID,
-                              commandId, "u", mediaPlaybackStatus);
-
-    EmberStatus status = emberAfSendResponse();
-    if (status != EMBER_SUCCESS)
-    {
-        emberAfMediaPlaybackClusterPrintln("Failed to send %s: 0x%X", responseName, status);
-    }
-}
-
-EmberAfMediaPlaybackStatus MediaPlaybackManager::proxyMediaPlaybackRequest(MediaPlaybackRequest mediaPlaybackRequest)
-{
-    switch (mediaPlaybackRequest)
-    {
-    case Play:
     // TODO: Insert code here
-    case Pause:
+    mCurrentState     = PlaybackStateEnum::kPlaying;
+    mPlaybackSpeed    = 1;
+    mPlaybackPosition = { 0, chip::app::DataModel::Nullable<uint64_t>(0) };
+
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
+}
+
+void MediaPlaybackManager::HandleStartOver(CommandResponseHelper<Commands::PlaybackResponse::Type> & helper)
+{
     // TODO: Insert code here
-    case Stop:
-    // TODO: Insert code here
-    case StartOver:
-    // TODO: Insert code here
-    case Previous:
-    // TODO: Insert code here
-    case Next:
-    // TODO: Insert code here
-    case Rewind:
-    // TODO: Insert code here
-    case FastForward:
-    // TODO: Insert code here
-    case SkipForward:
-    // TODO: Insert code here
-    case Seek:
-        return EMBER_ZCL_MEDIA_PLAYBACK_STATUS_SUCCESS;
-        break;
-    default: {
-        return EMBER_ZCL_MEDIA_PLAYBACK_STATUS_SUCCESS;
-    }
-    }
-}
+    mPlaybackPosition = { 0, chip::app::DataModel::Nullable<uint64_t>(0) };
 
-bool emberAfMediaPlaybackClusterMediaPlayCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Play);
-    MediaPlaybackManager().storeNewPlaybackState(emberAfCurrentEndpoint(), EMBER_ZCL_MEDIA_PLAYBACK_STATE_PLAYING);
-    sendResponse("MediaPlayResponse", ZCL_MEDIA_PLAY_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaPauseCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Pause);
-    MediaPlaybackManager().storeNewPlaybackState(emberAfCurrentEndpoint(), EMBER_ZCL_MEDIA_PLAYBACK_STATE_PAUSED);
-    sendResponse("MediaPauseResponse", ZCL_MEDIA_PAUSE_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaStopCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Stop);
-    MediaPlaybackManager().storeNewPlaybackState(emberAfCurrentEndpoint(), EMBER_ZCL_MEDIA_PLAYBACK_STATE_NOT_PLAYING);
-    sendResponse("MediaStopResponse", ZCL_MEDIA_STOP_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaFastForwardCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::FastForward);
-    sendResponse("MediaFastForward", ZCL_MEDIA_FAST_FORWARD_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaPreviousCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Previous);
-    sendResponse("MediaPrevious", ZCL_MEDIA_PREVIOUS_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaRewindCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Rewind);
-    sendResponse("MediaRewind", ZCL_MEDIA_REWIND_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaSkipBackwardCallback(chip::app::Command *, uint64_t deltaPositionMilliseconds)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::SkipBackward);
-    sendResponse("MediaSkipBackward", ZCL_MEDIA_SKIP_BACKWARD_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaSkipForwardCallback(chip::app::Command *, uint64_t deltaPositionMilliseconds)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::SkipForward);
-    sendResponse("MediaSkipForward", ZCL_MEDIA_SKIP_FORWARD_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaSkipSeekCallback(chip::app::Command *, uint64_t positionMilliseconds)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Seek);
-    sendResponse("MediaSeek", ZCL_MEDIA_SKIP_FORWARD_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-
-bool emberAfMediaPlaybackClusterMediaNextCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::Next);
-    sendResponse("MediaNext", ZCL_MEDIA_NEXT_RESPONSE_COMMAND_ID, status);
-    return true;
-}
-bool emberAfMediaPlaybackClusterMediaStartOverCallback(chip::app::Command *)
-{
-    EmberAfMediaPlaybackStatus status = MediaPlaybackManager().proxyMediaPlaybackRequest(MediaPlaybackRequest::StartOver);
-    sendResponse("MediaStartOver", ZCL_MEDIA_START_OVER_RESPONSE_COMMAND_ID, status);
-    return true;
+    Commands::PlaybackResponse::Type response;
+    response.data   = chip::MakeOptional(CharSpan::fromCharString("data response"));
+    response.status = MediaPlaybackStatusEnum::kSuccess;
+    helper.Success(response);
 }

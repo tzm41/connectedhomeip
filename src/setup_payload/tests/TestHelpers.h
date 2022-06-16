@@ -15,34 +15,37 @@
  *    limitations under the License.
  */
 
+#pragma once
+
 #include <bitset>
 
-#include <setup_payload/Base38.cpp>
-#include <setup_payload/QRCodeSetupPayloadGenerator.cpp>
-#include <setup_payload/QRCodeSetupPayloadParser.cpp>
-#include <setup_payload/SetupPayload.cpp>
+#include <setup_payload/Base38Decode.h>
+#include <setup_payload/Base38Encode.h>
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
+#include <setup_payload/QRCodeSetupPayloadParser.h>
+#include <setup_payload/SetupPayload.h>
 
 namespace chip {
 
 const uint16_t kSmallBufferSizeInBytes   = 1;
 const uint16_t kDefaultBufferSizeInBytes = 512;
 
-const uint8_t kOptionalDefaultStringTag       = 2;
-const std::string kOptionalDefaultStringValue = "myData";
+const uint8_t kOptionalDefaultStringTag      = 0x82; // Vendor "test" tag
+constexpr char kOptionalDefaultStringValue[] = "myData";
 
-const uint8_t kOptionalDefaultIntTag    = 3;
+const uint8_t kOptionalDefaultIntTag    = 0x83; // Vendor "test" tag
 const uint32_t kOptionalDefaultIntValue = 12;
 
-const char * kSerialNumberDefaultStringValue   = "123456789";
-const uint32_t kSerialNumberDefaultUInt32Value = 123456789;
+constexpr char kSerialNumberDefaultStringValue[] = "123456789";
+const uint32_t kSerialNumberDefaultUInt32Value   = 123456789;
 
-constexpr const char * kDefaultPayloadQRCode = "MT:R5L90MP500K64J00000";
+constexpr const char * kDefaultPayloadQRCode = "MT:M5L90MP500K64J00000";
 
 inline SetupPayload GetDefaultPayload()
 {
     SetupPayload payload;
 
-    payload.version               = 5;
+    payload.version               = 0;
     payload.vendorID              = 12;
     payload.productID             = 1;
     payload.commissioningFlow     = CommissioningFlow::kStandard;
@@ -129,14 +132,16 @@ inline bool CompareBinary(SetupPayload & payload, std::string & expectedBinary)
     return (expectedBinary == resultBinary);
 }
 
-inline bool CheckWriteRead(SetupPayload & inPayload)
+inline bool CheckWriteRead(SetupPayload & inPayload, bool allowInvalidPayload = false)
 {
     SetupPayload outPayload;
     std::string result;
 
     uint8_t optionalInfo[kDefaultBufferSizeInBytes];
     memset(optionalInfo, 0xFF, sizeof(optionalInfo));
-    QRCodeSetupPayloadGenerator(inPayload).payloadBase38Representation(result, optionalInfo, sizeof(optionalInfo));
+    auto generator = QRCodeSetupPayloadGenerator(inPayload);
+    generator.SetAllowInvalidPayload(allowInvalidPayload);
+    generator.payloadBase38Representation(result, optionalInfo, sizeof(optionalInfo));
 
     outPayload = {};
     QRCodeSetupPayloadParser(result).populatePayload(outPayload);

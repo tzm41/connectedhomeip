@@ -23,49 +23,31 @@
 
 #pragma once
 
-#include <lib/core/ReferenceCounted.h>
-#include <transport/SecureSessionMgr.h>
+#include <messaging/Flags.h>
+#include <protocols/Protocols.h>
+#include <transport/SessionManager.h>
 
 namespace chip {
 namespace Messaging {
 
-class ReliableMessageMgr;
 class ReliableMessageContext;
 
-class ExchangeMessageDispatch : public ReferenceCounted<ExchangeMessageDispatch>
+class ExchangeMessageDispatch
 {
 public:
     ExchangeMessageDispatch() {}
     virtual ~ExchangeMessageDispatch() {}
 
-    CHIP_ERROR Init() { return CHIP_NO_ERROR; }
+    virtual bool IsEncryptionRequired() const { return true; }
 
-    CHIP_ERROR SendMessage(SecureSessionHandle session, uint16_t exchangeId, bool isInitiator,
+    CHIP_ERROR SendMessage(SessionManager * sessionManager, const SessionHandle & session, uint16_t exchangeId, bool isInitiator,
                            ReliableMessageContext * reliableMessageContext, bool isReliableTransmission, Protocols::Id protocol,
                            uint8_t type, System::PacketBufferHandle && message);
 
-    /**
-     * The 'message' and 'retainedMessage' arguments may point to the same
-     * handle.  Therefore, callees _must_ ensure that any moving out of
-     * 'message' happens before writing to *retainedMessage.
-     */
-    virtual CHIP_ERROR ResendMessage(SecureSessionHandle session, EncryptedPacketBufferHandle && message,
-                                     EncryptedPacketBufferHandle * retainedMessage) const
-    {
-        return CHIP_ERROR_NOT_IMPLEMENTED;
-    }
+    virtual bool MessagePermitted(Protocols::Id protocol, uint8_t type) = 0;
 
-    virtual CHIP_ERROR OnMessageReceived(const PayloadHeader & payloadHeader, uint32_t messageId,
-                                         const Transport::PeerAddress & peerAddress,
-                                         ReliableMessageContext * reliableMessageContext);
-
-protected:
-    virtual bool MessagePermitted(uint16_t protocol, uint8_t type) = 0;
-
-    virtual CHIP_ERROR SendMessageImpl(SecureSessionHandle session, PayloadHeader & payloadHeader,
-                                       System::PacketBufferHandle && message, EncryptedPacketBufferHandle * retainedMessage) = 0;
-
-    virtual bool IsReliableTransmissionAllowed() { return true; }
+    // TODO: remove IsReliableTransmissionAllowed, this function should be provided over session.
+    virtual bool IsReliableTransmissionAllowed() const { return true; }
 };
 
 } // namespace Messaging

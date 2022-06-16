@@ -16,6 +16,7 @@ import("//build_overrides/build.gni")
 import("//build_overrides/pigweed.gni")
 
 import("${build_root}/config/compiler/compiler.gni")
+import("${build_root}/config/sysroot.gni")
 import("${build_root}/config/target.gni")
 
 if (current_os == "mac") {
@@ -32,6 +33,8 @@ if (current_cpu == "arm" || current_cpu == "arm64") {
   import("${build_root}/config/arm.gni")
 } else if (current_cpu == "x86" || current_cpu == "x86_64") {
   import("${build_root}/config/x86.gni")
+} else if (current_cpu == "riscv") {
+  import("${build_root}/config/riscv.gni")
 }
 
 config("release") {
@@ -53,55 +56,98 @@ config("abi_default") {
     ]
   } else if (current_os == "ios") {
     # iOS ABI currently set by chip_xcode_build_connector.sh
-  } else if (current_cpu == "arm" || current_cpu == "arm64") {
-    if (arm_arch != "") {
-      cflags += [ "-march=${arm_arch}" ]
-    }
-    if (arm_cpu != "") {
-      cflags += [ "-mcpu=${arm_cpu}" ]
-    }
-    if (arm_tune != "") {
-      cflags += [ "-mtune=${arm_tune}" ]
-    }
-    if (arm_abi != "") {
-      cflags += [ "-mabi=${arm_abi}" ]
-    }
-    if (arm_fpu != "") {
-      cflags += [ "-mfpu=${arm_fpu}" ]
-    }
-    if (arm_float_abi != "") {
-      cflags += [ "-mfloat-abi=${arm_float_abi}" ]
-    }
-    if (arm_use_thumb) {
-      cflags += [ "-mthumb" ]
-    }
-  } else if (current_cpu == "x86" || current_cpu == "x86_64") {
-    if (x86_arch != "") {
-      cflags += [ "-march=${x86_arch}" ]
-    }
-    if (x86_cpu != "") {
-      cflags += [ "-mcpu=${x86_cpu}" ]
-    }
-    if (x86_tune != "") {
-      cflags += [ "-mtune=${x86_tune}" ]
-    }
+  }
 
-    if (current_cpu == "x86_64") {
-      cflags += [
-        "-msse4.2",
-        "-mpopcnt",
-        "-m64",
-      ]
-    } else if (current_cpu == "x86") {
-      cflags += [
-        "-mssse3",
-        "-mfpmath=sse",
-        "-m32",
-      ]
+  if (current_os != "mac" && current_os != "ios") {
+    if (current_cpu == "arm" || current_cpu == "arm64") {
+      if (current_os == "linux" && is_clang) {
+        if (current_cpu == "arm") {
+          cflags += [ "--target=armv7-linux-gnueabihf" ]
+        } else if (current_cpu == "arm64") {
+          cflags += [ "--target=aarch64-linux-gnu" ]
+        }
+      }
+
+      if (arm_arch != "") {
+        cflags += [ "-march=${arm_arch}" ]
+      }
+      if (arm_cpu != "") {
+        cflags += [ "-mcpu=${arm_cpu}" ]
+      }
+      if (arm_tune != "") {
+        cflags += [ "-mtune=${arm_tune}" ]
+      }
+      if (arm_abi != "") {
+        cflags += [ "-mabi=${arm_abi}" ]
+      }
+      if (arm_fpu != "") {
+        cflags += [ "-mfpu=${arm_fpu}" ]
+      }
+      if (arm_float_abi != "") {
+        cflags += [ "-mfloat-abi=${arm_float_abi}" ]
+      }
+      if (arm_use_thumb) {
+        cflags += [ "-mthumb" ]
+      }
+    }
+    if (current_cpu == "x86" || current_cpu == "x86_64") {
+      if (x86_arch != "") {
+        cflags += [ "-march=${x86_arch}" ]
+      }
+      if (x86_cpu != "") {
+        cflags += [ "-mcpu=${x86_cpu}" ]
+      }
+      if (x86_tune != "") {
+        cflags += [ "-mtune=${x86_tune}" ]
+      }
+
+      if (current_cpu == "x86_64") {
+        cflags += [
+          "-msse4.2",
+          "-mpopcnt",
+          "-m64",
+        ]
+      } else if (current_cpu == "x86") {
+        cflags += [
+          "-mssse3",
+          "-mfpmath=sse",
+          "-m32",
+        ]
+      }
+    }
+    if (current_cpu == "riscv") {
+      if (riscv_arch != "") {
+        cflags += [ "-march=${riscv_arch}" ]
+      }
+      if (riscv_cpu != "") {
+        cflags += [ "-mcpu=${riscv_cpu}" ]
+      }
+      if (riscv_tune != "") {
+        cflags += [ "-mtune=${riscv_tune}" ]
+      }
+      if (riscv_abi != "") {
+        cflags += [ "-mabi=${riscv_abi}" ]
+      }
+      if (riscv_fpu != "") {
+        cflags += [ "-mfpu=${riscv_fpu}" ]
+      }
+      if (riscv_float_abi != "") {
+        cflags += [ "-mfloat-abi=${riscv_float_abi}" ]
+      }
     }
   }
+
   asmflags = cflags
   ldflags = cflags
+}
+
+config("dead_code_elimination_default") {
+  # Delete unreferenced sections. Helpful with -ffunction-sections.
+  if (current_os == "mac" || current_os == "ios") {
+    ldflags = [ "-Wl,-dead_strip" ]
+  } else {
+    ldflags = [ "-Wl,--gc-sections" ]
+  }
 }
 
 config("target_default") {
@@ -119,10 +165,15 @@ config("optimize_zero") {
   ldflags = cflags
 }
 
+config("optimize_debug") {
+  cflags = [ "-O${optimize_debug_level}" ]
+  ldflags = cflags
+}
+
 config("optimize_default") {
   if (is_debug) {
     if (optimize_debug) {
-      configs = [ "$dir_pw_build:optimize_debugging" ]
+      configs = [ ":optimize_debug" ]
     } else {
       configs = [ ":optimize_zero" ]
     }
@@ -146,6 +197,7 @@ config("disabled_warnings") {
   cflags = [
     "-Wno-deprecated-declarations",
     "-Wno-unknown-warning-option",
+    "-Wno-maybe-uninitialized",
     "-Wno-missing-field-initializers",
     "-Wno-unused-parameter",
   ]
@@ -161,27 +213,52 @@ config("disabled_warnings") {
   }
 }
 
-config("strict_warnings") {
-  cflags = [
-    "-Wall",
-    "-Wextra",
-    "-Wshadow",
-    "-Wunreachable-code",
-  ]
-
-  cflags_cc = [ "-Wnon-virtual-dtor" ]
+config("warnings_common") {
+  cflags = [ "-Wall" ]
 
   ldflags = []
-
   if (treat_warnings_as_errors) {
     cflags += [ "-Werror" ]
     ldflags += [ "-Werror" ]
   }
 
+  if (current_os != "mac" && current_os != "ios") {
+    ldflags += [ "-Wl,--fatal-warnings" ]
+  }
+
+  if (current_os != "mac" && current_os != "ios" && current_os != "linux" &&
+      current_os != "win" && current_os != "tizen" && current_os != "webos") {
+    cflags += [ "-Wstack-usage=8192" ]
+  }
+}
+
+config("strict_warnings") {
+  cflags = [
+    "-Wextra",
+    "-Wshadow",
+    "-Wunreachable-code",
+    "-Wvla",
+    "-Wformat",
+    "-Wformat-nonliteral",
+    "-Wformat-security",
+  ]
+
+  if (current_os == "webos") {
+    cflags -= [
+      "-Wshadow",
+      "-Wvla",
+    ]
+  }
+
+  cflags_cc = [ "-Wnon-virtual-dtor" ]
+
+  ldflags = []
+
   if (is_clang) {
     cflags += [
       "-Wimplicit-fallthrough",
       "-Wheader-hygiene",
+      "-Wformat-type-confusion",
     ]
   }
 
@@ -192,18 +269,27 @@ config("strict_warnings") {
 
 config("warnings_default") {
   configs = [
+    ":warnings_common",
     ":strict_warnings",
     ":disabled_warnings",
   ]
+}
 
-  if (current_os != "mac" && current_os != "ios") {
-    ldflags = [ "-Wl,--fatal-warnings" ]
-  }
+config("disabled_warnings_third_party") {
+  cflags = [
+    "-Wno-unused",
+    "-Wno-format",
+    "-Wno-maybe-uninitialized",
+    "-Wno-address",
+  ]
+}
 
-  if (current_os != "mac" && current_os != "ios" && current_os != "linux" &&
-      current_os != "win") {
-    cflags = [ "-Wstack-usage=8192" ]
-  }
+config("warnings_third_party") {
+  configs = [
+    ":warnings_common",
+    ":disabled_warnings",
+    ":disabled_warnings_third_party",
+  ]
 }
 
 config("symbols_default") {
@@ -228,13 +314,24 @@ config("runtime_default") {
       "$dir_pw_toolchain/host_clang:xcode_sysroot",
     ]
   }
-  if (current_os == "linux") {
+  if (current_os == "linux" || current_os == "tizen" || current_os == "webos") {
     libs = [
       "dl",
       "pthread",
       "rt",
     ]
   }
+
+  cflags = []
+  ldflags = []
+
+  if (sysroot != "") {
+    cflags += [ "--sysroot=${sysroot}" ]
+    ldflags += [ "--sysroot=${sysroot}" ]
+  }
+
+  cflags += runtime_library_cflags
+  ldflags += runtime_library_ldflags
 }
 
 # To use different sanitizer options, use `gn args .` in the out folder and
@@ -248,6 +345,9 @@ config("runtime_default") {
 #
 
 declare_args() {
+  # Enable Thread sanitizer
+  is_tsan = false
+
   # Enable address sanitizer
   is_asan = false
 
@@ -267,6 +367,12 @@ config("sanitize_address") {
     "-fsanitize=address",
     "-fno-omit-frame-pointer",
   ]
+  ldflags = cflags
+}
+
+config("sanitize_thread") {
+  cflags = [ "-fsanitize=thread" ]
+
   ldflags = cflags
 }
 
@@ -300,6 +406,10 @@ config("sanitize_recover_all") {
 config("sanitize_default") {
   configs = []
 
+  if (is_tsan) {
+    configs += [ ":sanitize_thread" ]
+  }
+
   if (is_asan) {
     configs += [ ":sanitize_address" ]
   }
@@ -317,7 +427,33 @@ config("sanitize_default") {
   }
 }
 
+config("libfuzzer_fuzzing") {
+  cflags = [ "-fsanitize=fuzzer" ]
+  ldflags = cflags
+}
+
 config("fuzzing_default") {
+  configs = []
+  if (is_libfuzzer) {
+    configs += [ ":libfuzzer_fuzzing" ]
+  }
+}
+
+config("coverage") {
+  cflags = [ "--coverage" ]
+  ldflags = cflags
+}
+
+config("coverage_default") {
+  configs = []
+  if (use_coverage) {
+    configs += [ ":coverage" ]
+  }
+}
+
+declare_args() {
+  # Enable Runtime Type Information (RTTI)
+  enable_rtti = false
 }
 
 config("no_rtti") {
@@ -329,7 +465,11 @@ config("rtti") {
 }
 
 config("rtti_default") {
-  configs = [ ":no_rtti" ]
+  if (enable_rtti) {
+    configs = [ ":rtti" ]
+  } else {
+    configs = [ ":no_rtti" ]
+  }
 }
 
 config("no_exceptions") {
@@ -369,6 +509,11 @@ config("size_default") {
     "-ffunction-sections",
     "-fdata-sections",
   ]
+
+  # do not export functions in jni, or --gc-sections will not work and will be some undefined issues
+  if (current_os == "android") {
+    cflags += [ "-fvisibility=hidden" ]
+  }
 }
 
 config("stack_protector_default") {
@@ -393,7 +538,7 @@ config("aliasing_default") {
 }
 
 config("specs_default") {
-  if (current_cpu == "arm" && current_os == "freertos") {
+  if (current_cpu == "arm" && current_os == "freertos" && !is_clang) {
     cflags = [
       "--specs=nosys.specs",
       "--specs=nano.specs",

@@ -16,36 +16,40 @@
  */
 
 #include <chip/internal/ChipThreadWork.h>
-#include <mdns/Resolver.h>
+#include <lib/dnssd/Resolver.h>
+#include <lib/support/CodeUtils.h>
 #include <platform/CHIPDeviceLayer.h>
-#include <support/CodeUtils.h>
+
+#include <type_traits>
 
 using namespace chip;
-using namespace chip::Mdns;
+using namespace chip::Dnssd;
+
+static_assert(std::is_same<uint32_t, ChipError::StorageType>::value, "python assumes CHIP_ERROR maps to c_uint32");
 
 namespace {
 
 // callback types shared with python code (see ptyhon code in chip.discovery.types)
 using DiscoverSuccessCallback = void (*)(uint64_t fabricId, uint64_t nodeId, uint32_t interfaceId, const char * ip, uint16_t port);
-using DiscoverFailureCallback = void (*)(uint64_t fabricId, uint64_t nodeId, uint32_t error_code);
+using DiscoverFailureCallback = void (*)(uint64_t fabricId, uint64_t nodeId, ChipError::StorageType error_code);
 
-constexpr uint16_t kMdnsPort = 5353;
-
-class PythonResolverDelegate : public ResolverDelegate
+class PythonResolverDelegate : public OperationalResolveDelegate
 {
 public:
-    void OnNodeIdResolved(const ResolvedNodeData & nodeData) override
+    void OnOperationalNodeResolved(const ResolvedNodeData & nodeData) override
     {
         if (mSuccessCallback != nullptr)
         {
             char ipAddressBuffer[128];
 
-            mSuccessCallback(                                                         //
-                nodeData.mPeerId.GetFabricId(),                                       //
-                nodeData.mPeerId.GetNodeId(),                                         //
-                nodeData.mInterfaceId,                                                //
-                nodeData.mAddress.ToString(ipAddressBuffer, sizeof(ipAddressBuffer)), //
-                nodeData.mPort                                                        //
+            // TODO: For now, just provide addr 0, but this should really provide all and
+            // allow the caller to choose.
+            mSuccessCallback(                                                                            //
+                nodeData.operationalData.peerId.GetCompressedFabricId(),                                 //
+                nodeData.operationalData.peerId.GetNodeId(),                                             //
+                nodeData.resolutionData.interfaceId.GetPlatformInterface(),                              //
+                nodeData.resolutionData.ipAddress[0].ToString(ipAddressBuffer, sizeof(ipAddressBuffer)), //
+                nodeData.resolutionData.port                                                             //
             );
         }
         else
@@ -54,19 +58,17 @@ public:
         }
     }
 
-    void OnNodeIdResolutionFailed(const PeerId & peerId, CHIP_ERROR error) override
+    void OnOperationalNodeResolutionFailed(const PeerId & peerId, CHIP_ERROR error) override
     {
         if (mFailureCallback != nullptr)
         {
-            mFailureCallback(peerId.GetFabricId(), peerId.GetNodeId(), error);
+            mFailureCallback(peerId.GetCompressedFabricId(), peerId.GetNodeId(), error.AsInteger());
         }
         else
         {
             ChipLogError(Controller, "Discovery failure without any python callback set.");
         }
     }
-
-    void OnCommissionableNodeFound(const CommissionableNodeData & nodeData) override {}
 
     void SetSuccessCallback(DiscoverSuccessCallback cb) { mSuccessCallback = cb; }
     void SetFailureCallback(DiscoverFailureCallback cb) { mFailureCallback = cb; }
@@ -86,20 +88,18 @@ extern "C" void pychip_discovery_set_callbacks(DiscoverSuccessCallback success, 
     gPythonResolverDelegate.SetFailureCallback(failure);
 }
 
-extern "C" int32_t pychip_discovery_resolve(uint64_t fabricId, uint64_t nodeId)
+extern "C" ChipError::StorageType pychip_discovery_resolve(uint64_t fabricId, uint64_t nodeId)
 {
-    int32_t result = CHIP_NO_ERROR;
+    CHIP_ERROR result = CHIP_NO_ERROR;
 
     chip::python::ChipMainThreadScheduleAndWait([&] {
-        result = Resolver::Instance().StartResolver(&chip::DeviceLayer::InetLayer, kMdnsPort);
+        result = Resolver::Instance().Init(chip::DeviceLayer::UDPEndPointManager());
         ReturnOnFailure(result);
+        Resolver::Instance().SetOperationalDelegate(&gPythonResolverDelegate);
 
-        result = Resolver::Instance().SetResolverDelegate(&gPythonResolverDelegate);
-        ReturnOnFailure(result);
-
-        result = Resolver::Instance().ResolveNodeId(chip::PeerId().SetFabricId(fabricId).SetNodeId(nodeId),
-                                                    chip::Inet::IPAddressType::kIPAddressType_Any);
+        result = Resolver::Instance().ResolveNodeId(chip::PeerId().SetCompressedFabricId(fabricId).SetNodeId(nodeId),
+                                                    chip::Inet::IPAddressType::kAny);
     });
 
-    return result;
+    return result.AsInteger();
 }

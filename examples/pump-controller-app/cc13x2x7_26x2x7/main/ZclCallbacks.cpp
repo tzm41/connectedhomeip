@@ -15,43 +15,36 @@
  *    limitations under the License.
  */
 
-#include <support/logging/CHIPLogging.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 #include "AppConfig.h"
+#include "AppTask.h"
 #include "PumpManager.h"
 
-#include <app/chip-zcl-zpro-codec.h>
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/enums.h>
-#include <app/util/af-types.h>
-#include <app/util/attribute-storage.h>
-#include <app/util/util.h>
+#include <app-common/zap-generated/ids/Attributes.h>
+#include <app-common/zap-generated/ids/Clusters.h>
+#include <app/ConcreteAttributePath.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 using namespace ::chip;
+using namespace ::chip::app::Clusters;
 
-void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId, AttributeId attributeId, uint8_t mask,
-                                        uint16_t manufacturerCode, uint8_t type, uint8_t size, uint8_t * value)
+void MatterPostAttributeChangeCallback(const chip::app::ConcreteAttributePath & attributePath, uint8_t type, uint16_t size,
+                                       uint8_t * value)
 {
-    if (clusterId != ZCL_ON_OFF_CLUSTER_ID)
+    if (attributePath.mClusterId == OnOff::Id && attributePath.mAttributeId == OnOff::Attributes::OnOff::Id)
     {
-        ChipLogProgress(Zcl, "Unknown cluster ID: %d", clusterId);
-        return;
+        PumpMgr().InitiateAction(0, *value ? PumpManager::START_ACTION : PumpManager::STOP_ACTION);
     }
-
-    if (attributeId != ZCL_ON_OFF_ATTRIBUTE_ID)
+    else if (attributePath.mClusterId == LevelControl::Id &&
+             attributePath.mAttributeId == LevelControl::Attributes::CurrentLevel::Id)
     {
-        ChipLogProgress(Zcl, "Unknown attribute ID: %d", attributeId);
-        return;
-    }
-
-    if (*value)
-    {
-        PumpMgr().InitiateAction(0, PumpManager::LOCK_ACTION);
+        ChipLogProgress(Zcl, "[pump-app] Cluster LevelControl: attribute CurrentLevel set to %u", *value);
     }
     else
     {
-        PumpMgr().InitiateAction(0, PumpManager::UNLOCK_ACTION);
+        ChipLogProgress(Zcl, "Unknown attribute ID: " ChipLogFormatMEI, ChipLogValueMEI(attributePath.mAttributeId));
+        return;
     }
 }
 
@@ -72,5 +65,5 @@ void emberAfPostAttributeChangeCallback(EndpointId endpoint, ClusterId clusterId
  */
 void emberAfOnOffClusterInitCallback(EndpointId endpoint)
 {
-    // TODO: implement any additional Cluster Server init actions
+    GetAppTask().UpdateClusterState();
 }

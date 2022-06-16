@@ -1,54 +1,59 @@
 {{> header}}
 
-{{#if (chip_has_client_clusters)}}
 #ifndef CHIP_CLUSTERS_H
 #define CHIP_CLUSTERS_H
 
 #import <Foundation/Foundation.h>
 
-@class CHIPDevice;
+#import <CHIP/CHIPAttributeCacheContainer.h>
 
-typedef void (^ResponseHandler)(NSError * _Nullable error, NSDictionary * _Nullable values);
+#include <CHIP/CHIPCluster.h>
+#include <CHIP/CHIPCommandPayloadsObjc.h>
+
+typedef void (^ResponseHandler)(id _Nullable value, NSError * _Nullable error);
+typedef void (^StatusCompletion)(NSError * _Nullable error);
+typedef void (^SubscriptionEstablishedHandler)(void);
 
 NS_ASSUME_NONNULL_BEGIN
 
-/**
- * CHIPCluster
- *    This is the base class for clusters.
- */
-@interface CHIPCluster : NSObject
-
-- (nullable instancetype)initWithDevice:(CHIPDevice *)device endpoint:(uint8_t)endpoint queue:(dispatch_queue_t)queue NS_DESIGNATED_INITIALIZER;
-- (instancetype)init NS_UNAVAILABLE;
-+ (instancetype)new NS_UNAVAILABLE;
-
-@end
-
-{{#chip_client_clusters}}
+{{#chip_client_clusters includeAll=true}}
 
 
 /**
  * Cluster {{name}}
  *    {{description}}
  */
-@interface CHIP{{asCamelCased name false}} : CHIPCluster
+@interface CHIP{{asUpperCamelCase name}} : CHIPCluster
 
-{{#chip_server_cluster_commands}}
-{{#if (zcl_command_arguments_count this.id)}}
-- (void){{asCamelCased name}}:{{#chip_server_cluster_command_arguments}}{{#if (isFirstElement index)}}{{else}}{{asCamelCased label}}:{{/if}}({{asObjectiveCBasicType type}}){{asCamelCased label}} {{/chip_server_cluster_command_arguments}}responseHandler:(ResponseHandler)responseHandler;
-{{else}}
-- (void){{asCamelCased name}}:(ResponseHandler)responseHandler;
-{{/if}}
-{{/chip_server_cluster_commands}}
+{{#chip_cluster_commands}}
+- (void){{asLowerCamelCase name}}WithParams:(CHIP{{asUpperCamelCase parent.name}}Cluster{{asUpperCamelCase name}}Params * {{#unless (commandHasRequiredField .)}}_Nullable{{/unless}})params completionHandler:({{>command_completion_type command=.}})completionHandler;
+{{#unless (hasArguments)}}
+- (void){{asLowerCamelCase name}}WithCompletionHandler:({{>command_completion_type command=.}})completionHandler;
+{{/unless}}
+{{/chip_cluster_commands}}
 
 {{#chip_server_cluster_attributes}}
-- (void)readAttribute{{asCamelCased name false}}WithResponseHandler:(ResponseHandler)responseHandler;
-{{#if (isWritableAttribute)}}
-- (void)writeAttribute{{asCamelCased name false}}WithValue:({{asObjectiveCBasicType type}})value responseHandler:(ResponseHandler)responseHandler;
+{{#*inline "attribute"}}Attribute{{asUpperCamelCase name}}{{/inline}}
+- (void)read{{>attribute}}With
+{{~#if_is_fabric_scoped_struct type~}}
+  Params:(CHIPReadParams * _Nullable)params completionHandler:
+{{~else~}}
+  CompletionHandler:
+{{~/if_is_fabric_scoped_struct~}}
+(void (^)({{asObjectiveCClass type parent.name}} * _Nullable value, NSError * _Nullable error))completionHandler;
+{{#if isWritableAttribute}}
+- (void)write{{>attribute}}WithValue:({{asObjectiveCType type parent.name}})value completionHandler:(StatusCompletion)completionHandler;
+- (void)write{{>attribute}}WithValue:({{asObjectiveCType type parent.name}})value params:(CHIPWriteParams * _Nullable)params completionHandler:(StatusCompletion)completionHandler;
 {{/if}}
-{{#if (isReportableAttribute)}}
-- (void) configureAttribute{{asCamelCased name false}}WithMinInterval:(uint16_t)minInterval  maxInterval:(uint16_t)maxInterval{{#unless (isDiscreteType)}} change:({{chipType}})change{{/unless}} responseHandler:(ResponseHandler)responseHandler;
-- (void) reportAttribute{{asCamelCased name false}}WithResponseHandler:(ResponseHandler)responseHandler;
+{{#if isReportableAttribute}}
+/**
+ * This API does not support setting autoResubscribe to NO in the
+ * CHIPSubscribeParams.
+ */
+- (void) subscribe{{>attribute}}WithMinInterval:(NSNumber * _Nonnull)minInterval  maxInterval:(NSNumber * _Nonnull)maxInterval
+       params:(CHIPSubscribeParams * _Nullable)params
+subscriptionEstablished:(SubscriptionEstablishedHandler _Nullable)subscriptionEstablishedHandler reportHandler:(void (^)({{asObjectiveCClass type parent.name}} * _Nullable value, NSError * _Nullable error))reportHandler;
++ (void) read{{>attribute}}WithAttributeCache:(CHIPAttributeCacheContainer *)attributeCacheContainer endpoint:(NSNumber *)endpoint queue:(dispatch_queue_t)queue completionHandler:(void (^)({{asObjectiveCClass type parent.name}} * _Nullable value, NSError * _Nullable error))completionHandler;
 {{/if}}
 {{/chip_server_cluster_attributes}}
 
@@ -56,7 +61,25 @@ NS_ASSUME_NONNULL_BEGIN
 
 {{/chip_client_clusters}}
 
+{{#zcl_clusters}}
+{{#zcl_enums}}
+typedef NS_ENUM({{asUnderlyingZclType name}}, {{objCEnumName ../name label}}) {
+   {{#zcl_enum_items}}
+   {{objCEnumName ../../name ../label}}{{objCEnumItemLabel label}} = {{asHex value 2}},
+   {{/zcl_enum_items}}
+};
+
+{{/zcl_enums}}
+{{#zcl_bitmaps}}
+typedef NS_OPTIONS({{asUnderlyingZclType name}}, {{objCEnumName ../name label}}) {
+   {{#zcl_bitmap_items}}
+   {{objCEnumName ../../name ../label}}{{objCEnumItemLabel label}} = {{asHex mask}},
+   {{/zcl_bitmap_items}}
+};
+
+{{/zcl_bitmaps}}
+{{/zcl_clusters}}
+
 NS_ASSUME_NONNULL_END
 
 #endif /* CHIP_CLUSTERS_H */
-{{/if}}

@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *    Copyright (c) 2013-2017 Nest Labs, Inc.
  *    All rights reserved.
  *
@@ -43,21 +43,22 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
 // clang-format off
 OptionDef gCmdOptionDefs[] =
 {
-    { "type",             kArgumentRequired, 't' },
-    { "subject-chip-id",  kArgumentRequired, 'i' },
-    { "subject-fab-id",   kArgumentRequired, 'f' },
-    { "subject-at",       kArgumentRequired, 'a' },
-    { "subject-cn-u",     kArgumentRequired, 'c' },
-    { "future-ext-sub",   kArgumentRequired, 'x' },
-    { "future-ext-info",  kArgumentRequired, '2' },
-    { "key",              kArgumentRequired, 'k' },
-    { "ca-cert",          kArgumentRequired, 'C' },
-    { "ca-key",           kArgumentRequired, 'K' },
-    { "out",              kArgumentRequired, 'o' },
-    { "out-key",          kArgumentRequired, 'O' },
-    { "out-format",       kArgumentRequired, 'F' },
-    { "valid-from",       kArgumentRequired, 'V' },
-    { "lifetime",         kArgumentRequired, 'l' },
+    { "type",                kArgumentRequired, 't' },
+    { "subject-chip-id",     kArgumentRequired, 'i' },
+    { "subject-fab-id",      kArgumentRequired, 'f' },
+    { "subject-cat",         kArgumentRequired, 'a' },
+    { "subject-cn-u",        kArgumentRequired, 'c' },
+    { "path-len-constraint", kArgumentRequired, 'p' },
+    { "future-ext-sub",      kArgumentRequired, 'x' },
+    { "future-ext-info",     kArgumentRequired, '2' },
+    { "key",                 kArgumentRequired, 'k' },
+    { "ca-cert",             kArgumentRequired, 'C' },
+    { "ca-key",              kArgumentRequired, 'K' },
+    { "out",                 kArgumentRequired, 'o' },
+    { "out-key",             kArgumentRequired, 'O' },
+    { "out-format",          kArgumentRequired, 'F' },
+    { "valid-from",          kArgumentRequired, 'V' },
+    { "lifetime",            kArgumentRequired, 'l' },
     { }
 };
 
@@ -72,23 +73,30 @@ const char * const gCmdOptionHelp =
     "\n"
     "   -i, --subject-chip-id <hex-digits>\n"
     "\n"
-    "       Subject DN CHIP Id attribute (in hex). For Node Certificate it is CHIP Node Id attribute.\n"
+    "       Subject DN CHIP Id attribute in hexadecimal format with upto 8 octets with or without '0x' prefix.\n"
     "          - for Root certificate it is ChipRootId\n"
     "          - for intermediate CA certificate it is ChipICAId\n"
-    "          - for Node certificate it is ChipNodeId\n"
+    "          - for Node certificate it is ChipNodeId. The value should be in a range [1, 0xFFFFFFEFFFFFFFFF]\n"
     "          - for Firmware Signing certificate it is ChipFirmwareSigningId\n"
     "\n"
     "   -f, --subject-fab-id <hex-digits>\n"
     "\n"
-    "       Subject DN Fabric Id attribute (in hex).\n"
+    "       Subject DN Fabric Id attribute in hexadecimal format with upto 8 octets with or without '0x' prefix.\n"
+    "       The value should be different from 0.\n"
     "\n"
-    "   -a, --subject-at <hex-digits>\n"
+    "   -a, --subject-cat <hex-digits>\n"
     "\n"
-    "       Subject DN CHIP Authentication Tag (in hex).\n"
+    "       Subject DN CHIP CASE Authentication Tag in hexadecimal format with upto 4 octets with or without '0x' prefix.\n"
+    "       The version subfield (lower 16 bits) should be different from 0.\n"
     "\n"
     "   -c, --subject-cn-u <string>\n"
     "\n"
     "       Subject DN Common Name attribute encoded as UTF8String.\n"
+    "\n"
+    "   -p, --path-len-constraint <int>\n"
+    "\n"
+    "       Path length constraint to be included in the basic constraint extension.\n"
+    "       If not specified, the path length constraint is not included in the extension.\n"
     "\n"
     "   -x, --future-ext-sub <string>\n"
     "\n"
@@ -137,7 +145,9 @@ const char * const gCmdOptionHelp =
     "\n"
     "   -l, --lifetime <days>\n"
     "\n"
-    "       The lifetime for the new certificate, in whole days.\n"
+    "       The lifetime for the new certificate, in whole days. Use special value\n"
+    "       4294967295 to indicate that certificate doesn't have well defined\n"
+    "       expiration date\n"
     "\n"
     ;
 
@@ -166,6 +176,7 @@ OptionSet *gCmdOptionSets[] =
 
 ToolChipDN gSubjectDN;
 uint8_t gCertType                    = kCertType_NotSpecified;
+int gPathLengthConstraint            = kPathLength_NotSpecified;
 bool gSelfSign                       = false;
 const char * gCACertFileName         = nullptr;
 const char * gCAKeyFileName          = nullptr;
@@ -174,7 +185,7 @@ const char * gOutCertFileName        = nullptr;
 const char * gOutKeyFileName         = nullptr;
 CertFormat gOutCertFormat            = kCertFormat_Chip_Base64;
 KeyFormat gOutKeyFormat              = kKeyFormat_Chip_Base64;
-uint32_t gValidDays                  = 0;
+uint32_t gValidDays                  = kCertValidDays_Undefined;
 FutureExtension gFutureExtensions[3] = { { 0, nullptr } };
 uint8_t gFutureExtensionsCount       = 0;
 struct tm gValidFrom;
@@ -183,7 +194,7 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
     uint64_t chip64bitAttr;
-    OID attrOID;
+    uint32_t chip32bitAttr;
 
     switch (id)
     {
@@ -217,7 +228,7 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
         break;
 
     case 'i':
-        if (!ParseChip64bitAttr(arg, chip64bitAttr))
+        if (!ParseInt(arg, chip64bitAttr, 16))
         {
             PrintArgError("%s: Invalid value specified for subject chip id attribute: %s\n", progName, arg);
             return false;
@@ -226,23 +237,27 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
         switch (gCertType)
         {
         case kCertType_Node:
-            attrOID = kOID_AttributeType_ChipNodeId;
+            if (!chip::IsOperationalNodeId(chip64bitAttr))
+            {
+                PrintArgError("%s: Invalid value specified for chip node-id attribute: %s\n", progName, arg);
+                return false;
+            }
+            err = gSubjectDN.AddAttribute_MatterNodeId(chip64bitAttr);
             break;
         case kCertType_FirmwareSigning:
-            attrOID = kOID_AttributeType_ChipFirmwareSigningId;
+            err = gSubjectDN.AddAttribute_MatterFirmwareSigningId(chip64bitAttr);
             break;
         case kCertType_ICA:
-            attrOID = kOID_AttributeType_ChipICAId;
+            err = gSubjectDN.AddAttribute_MatterICACId(chip64bitAttr);
             break;
         case kCertType_Root:
-            attrOID = kOID_AttributeType_ChipRootId;
+            err = gSubjectDN.AddAttribute_MatterRCACId(chip64bitAttr);
             break;
         default:
             PrintArgError("%s: Certificate type argument should be specified prior to subject attribute: %s\n", progName, arg);
             return false;
         }
 
-        err = gSubjectDN.AddAttribute(attrOID, chip64bitAttr);
         if (err != CHIP_NO_ERROR)
         {
             fprintf(stderr, "Failed to add subject DN attribute: %s\n", chip::ErrorStr(err));
@@ -251,27 +266,14 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
         break;
 
     case 'a':
-        if (!ParseChip64bitAttr(arg, chip64bitAttr))
+        if (!ParseInt(arg, chip32bitAttr, 16) || !chip::IsValidCASEAuthTag(chip32bitAttr))
         {
-            PrintArgError("%s: Invalid value specified for the subject authentication tag attribute: %s\n", progName, arg);
+            PrintArgError("%s: Invalid value specified for the subject CASE Authenticated Tag (CAT) attribute: %s\n", progName,
+                          arg);
             return false;
         }
 
-        if (!gSubjectDN.HasAttr(kOID_AttributeType_ChipAuthTag1))
-        {
-            attrOID = kOID_AttributeType_ChipAuthTag1;
-        }
-        else if (!gSubjectDN.HasAttr(kOID_AttributeType_ChipAuthTag2))
-        {
-            attrOID = kOID_AttributeType_ChipAuthTag2;
-        }
-        else
-        {
-            PrintArgError("%s: Too many authentication tag attributes are specified: %s\n", progName, arg);
-            return false;
-        }
-
-        err = gSubjectDN.AddAttribute(attrOID, chip64bitAttr);
+        err = gSubjectDN.AddAttribute_MatterCASEAuthTag(chip32bitAttr);
         if (err != CHIP_NO_ERROR)
         {
             fprintf(stderr, "Failed to add subject DN attribute: %s\n", chip::ErrorStr(err));
@@ -279,14 +281,21 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
         }
         break;
 
+    case 'p':
+        if (!ParseInt(arg, gPathLengthConstraint))
+        {
+            PrintArgError("%s: Invalid value specified for path length constraint: %s\n", progName, arg);
+            return false;
+        }
+        break;
     case 'f':
-        if (!ParseChip64bitAttr(arg, chip64bitAttr))
+        if (!ParseInt(arg, chip64bitAttr, 16) || !chip::IsValidFabricId(chip64bitAttr))
         {
             PrintArgError("%s: Invalid value specified for subject fabric id attribute: %s\n", progName, arg);
             return false;
         }
 
-        err = gSubjectDN.AddAttribute(kOID_AttributeType_ChipFabricId, chip64bitAttr);
+        err = gSubjectDN.AddAttribute_MatterFabricId(chip64bitAttr);
         if (err != CHIP_NO_ERROR)
         {
             fprintf(stderr, "Failed to add Fabric Id attribute to the subject DN: %s\n", chip::ErrorStr(err));
@@ -295,8 +304,7 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
         break;
 
     case 'c':
-        err = gSubjectDN.AddAttribute(kOID_AttributeType_CommonName, reinterpret_cast<const uint8_t *>(arg),
-                                      static_cast<uint32_t>(strlen(arg)));
+        err = gSubjectDN.AddAttribute_CommonName(chip::CharSpan::fromCharString(arg), false);
         if (err != CHIP_NO_ERROR)
         {
             fprintf(stderr, "Failed to add Common Name attribute to the subject DN: %s\n", chip::ErrorStr(err));
@@ -451,9 +459,16 @@ bool Cmd_GenCert(int argc, char * argv[])
         ExitNow(res = false);
     }
 
-    if (gValidDays == 0)
+    if (gValidDays == kCertValidDays_Undefined)
     {
         fprintf(stderr, "Please specify the lifetime (in dys) for the new certificate using the --lifetime option.\n");
+        ExitNow(res = false);
+    }
+
+    if (gPathLengthConstraint != kPathLength_NotSpecified &&
+        (gCertType == kCertType_Node || gCertType == kCertType_FirmwareSigning))
+    {
+        fprintf(stderr, "Path length constraint shouldn't be specified for the leaf certificate.\n");
         ExitNow(res = false);
     }
 
@@ -491,8 +506,8 @@ bool Cmd_GenCert(int argc, char * argv[])
 
     if (gSelfSign)
     {
-        res = MakeCert(gCertType, &gSubjectDN, newCert.get(), newKey.get(), gValidFrom, gValidDays, gFutureExtensions,
-                       gFutureExtensionsCount, newCert.get(), newKey.get());
+        res = MakeCert(gCertType, &gSubjectDN, newCert.get(), newKey.get(), gValidFrom, gValidDays, gPathLengthConstraint,
+                       gFutureExtensions, gFutureExtensionsCount, newCert.get(), newKey.get());
         VerifyTrueOrExit(res);
     }
     else
@@ -506,8 +521,8 @@ bool Cmd_GenCert(int argc, char * argv[])
         res = ReadKey(gCAKeyFileName, caKey.get());
         VerifyTrueOrExit(res);
 
-        res = MakeCert(gCertType, &gSubjectDN, caCert.get(), caKey.get(), gValidFrom, gValidDays, gFutureExtensions,
-                       gFutureExtensionsCount, newCert.get(), newKey.get());
+        res = MakeCert(gCertType, &gSubjectDN, caCert.get(), caKey.get(), gValidFrom, gValidDays, gPathLengthConstraint,
+                       gFutureExtensions, gFutureExtensionsCount, newCert.get(), newKey.get());
         VerifyTrueOrExit(res);
     }
 

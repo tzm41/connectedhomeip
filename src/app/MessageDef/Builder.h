@@ -24,10 +24,10 @@
 #pragma once
 
 #include <app/util/basic-types.h>
-#include <core/CHIPCore.h>
-#include <core/CHIPTLV.h>
-#include <support/CodeUtils.h>
-#include <support/logging/CHIPLogging.h>
+#include <lib/core/CHIPCore.h>
+#include <lib/core/CHIPTLV.h>
+#include <lib/support/CodeUtils.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 namespace chip {
 namespace app {
@@ -85,15 +85,17 @@ public:
      */
     void Rollback(const chip::TLV::TLVWriter & aPoint) { *mpWriter = aPoint; }
 
+    void EndOfContainer();
+
+    Builder(Builder &) = delete;
+
 protected:
     CHIP_ERROR mError;
     chip::TLV::TLVWriter * mpWriter;
     chip::TLV::TLVType mOuterContainerType;
 
     Builder();
-    void EndOfContainer();
-
     CHIP_ERROR InitAnonymousStructure(chip::TLV::TLVWriter * const apWriter);
 };
-}; // namespace app
-}; // namespace chip
+} // namespace app
+} // namespace chip

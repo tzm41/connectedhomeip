@@ -20,19 +20,12 @@
  *          Provides the implementation of the DeviceControlServer object.
  */
 
-#include <platform/internal/DeviceControlServer.h>
+#include <platform/DeviceControlServer.h>
 
 #include <platform/ConfigurationManager.h>
 
 namespace chip {
 namespace DeviceLayer {
-namespace Internal {
-
-void CommissioningTimerFunction(System::Layer * layer, void * aAppState, System::Error aError)
-{
-    DeviceControlServer * server = reinterpret_cast<DeviceControlServer *>(aAppState);
-    server->CommissioningFailedTimerComplete(aError);
-}
 
 DeviceControlServer DeviceControlServer::sInstance;
 
@@ -41,48 +34,25 @@ DeviceControlServer & DeviceControlServer::DeviceControlSvr()
     return sInstance;
 }
 
-void DeviceControlServer::CommissioningFailedTimerComplete(System::Error aError)
+CHIP_ERROR DeviceControlServer::PostCommissioningCompleteEvent(NodeId peerNodeId, FabricIndex accessingFabricIndex)
 {
     ChipDeviceEvent event;
-    event.Type                         = DeviceEventType::kCommissioningComplete;
-    event.CommissioningComplete.status = CHIP_ERROR_TIMEOUT;
-    PlatformMgr().PostEvent(&event);
+
+    event.Type                              = DeviceEventType::kCommissioningComplete;
+    event.CommissioningComplete.nodeId      = peerNodeId;
+    event.CommissioningComplete.fabricIndex = accessingFabricIndex;
+
+    return PlatformMgr().PostEvent(&event);
 }
 
-CHIP_ERROR DeviceControlServer::ArmFailSafe(uint16_t expiryLengthSeconds)
-{
-    uint32_t timerMs = expiryLengthSeconds * 1000;
-    SystemLayer.StartTimer(timerMs, CommissioningTimerFunction, this);
-    return CHIP_NO_ERROR;
-}
-
-CHIP_ERROR DeviceControlServer::DisarmFailSafe()
-{
-    // TODO
-    return CHIP_ERROR_NOT_IMPLEMENTED;
-}
-
-CHIP_ERROR DeviceControlServer::CommissioningComplete()
-{
-    SystemLayer.CancelTimer(CommissioningTimerFunction, this);
-    ChipDeviceEvent event;
-    event.Type                         = DeviceEventType::kCommissioningComplete;
-    event.CommissioningComplete.status = CHIP_NO_ERROR;
-    PlatformMgr().PostEvent(&event);
-    return CHIP_NO_ERROR;
-}
-
-CHIP_ERROR DeviceControlServer::SetRegulatoryConfig(uint8_t location, const char * countryCode, uint64_t breadcrumb)
+CHIP_ERROR DeviceControlServer::SetRegulatoryConfig(uint8_t location, const CharSpan & countryCode)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
 
     err = ConfigurationMgr().StoreRegulatoryLocation(location);
     SuccessOrExit(err);
 
-    err = ConfigurationMgr().StoreCountryCode(countryCode, strlen(countryCode));
-    SuccessOrExit(err);
-
-    err = ConfigurationMgr().StoreBreadcrumb(breadcrumb);
+    err = ConfigurationMgr().StoreCountryCode(countryCode.data(), countryCode.size());
     SuccessOrExit(err);
 
 exit:
@@ -91,21 +61,17 @@ exit:
         ChipLogError(DeviceLayer, "SetRegulatoryConfig failed with error: %s", ErrorStr(err));
     }
 
-    // TODO(cecille): This command fails on ESP32, but it's blocking IP cluster-based commissioning so for now just return a success
-    // status.
-    return CHIP_NO_ERROR;
+    return err;
 }
 
-CHIP_ERROR DeviceControlServer::EnableNetworkForOperational(ByteSpan networkID)
+CHIP_ERROR DeviceControlServer::PostConnectedToOperationalNetworkEvent(ByteSpan networkID)
 {
     ChipDeviceEvent event;
     event.Type = DeviceEventType::kOperationalNetworkEnabled;
     // TODO(cecille): This should be some way to specify thread or wifi.
     event.OperationalNetwork.network = 0;
-    PlatformMgr().DispatchEvent(&event);
-    return CHIP_NO_ERROR;
+    return PlatformMgr().PostEvent(&event);
 }
 
-} // namespace Internal
 } // namespace DeviceLayer
 } // namespace chip

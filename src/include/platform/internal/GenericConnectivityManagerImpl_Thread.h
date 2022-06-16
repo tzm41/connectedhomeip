@@ -24,8 +24,9 @@
 
 #pragma once
 
+#include <app/AttributeAccessInterface.h>
+#include <lib/support/BitFlags.h>
 #include <platform/ThreadStackManager.h>
-#include <support/BitFlags.h>
 
 #include <cstdint>
 
@@ -62,12 +63,16 @@ protected:
     bool _IsThreadApplicationControlled();
     ConnectivityManager::ThreadDeviceType _GetThreadDeviceType();
     CHIP_ERROR _SetThreadDeviceType(ConnectivityManager::ThreadDeviceType deviceType);
-    void _GetThreadPollingConfig(ConnectivityManager::ThreadPollingConfig & pollingConfig);
-    CHIP_ERROR _SetThreadPollingConfig(const ConnectivityManager::ThreadPollingConfig & pollingConfig);
+#if CHIP_DEVICE_CONFIG_ENABLE_SED
+    CHIP_ERROR _GetSEDIntervalsConfig(ConnectivityManager::SEDIntervalsConfig & intervalsConfig);
+    CHIP_ERROR _SetSEDIntervalsConfig(const ConnectivityManager::SEDIntervalsConfig & intervalsConfig);
+    CHIP_ERROR _RequestSEDActiveMode(bool onOff);
+#endif
     bool _IsThreadAttached();
     bool _IsThreadProvisioned();
     void _ErasePersistentInfo();
-    bool _HaveServiceConnectivityViaThread();
+    void _ResetThreadNetworkDiagnosticsCounts();
+    CHIP_ERROR _WriteThreadNetworkDiagnosticAttributeToTlv(AttributeId attributeId, app::AttributeValueEncoder & encoder);
 
     // ===== Members for use by the implementation subclass.
 
@@ -136,24 +141,40 @@ GenericConnectivityManagerImpl_Thread<ImplClass>::_SetThreadDeviceType(Connectiv
     return ThreadStackMgrImpl().SetThreadDeviceType(deviceType);
 }
 
+#if CHIP_DEVICE_CONFIG_ENABLE_SED
 template <class ImplClass>
-inline void
-GenericConnectivityManagerImpl_Thread<ImplClass>::_GetThreadPollingConfig(ConnectivityManager::ThreadPollingConfig & pollingConfig)
+inline CHIP_ERROR
+GenericConnectivityManagerImpl_Thread<ImplClass>::_GetSEDIntervalsConfig(ConnectivityManager::SEDIntervalsConfig & intervalsConfig)
 {
-    ThreadStackMgrImpl().GetThreadPollingConfig(pollingConfig);
+    return ThreadStackMgrImpl().GetSEDIntervalsConfig(intervalsConfig);
 }
 
 template <class ImplClass>
-inline CHIP_ERROR GenericConnectivityManagerImpl_Thread<ImplClass>::_SetThreadPollingConfig(
-    const ConnectivityManager::ThreadPollingConfig & pollingConfig)
+inline CHIP_ERROR GenericConnectivityManagerImpl_Thread<ImplClass>::_SetSEDIntervalsConfig(
+    const ConnectivityManager::SEDIntervalsConfig & intervalsConfig)
 {
-    return ThreadStackMgrImpl().SetThreadPollingConfig(pollingConfig);
+    return ThreadStackMgrImpl().SetSEDIntervalsConfig(intervalsConfig);
 }
 
 template <class ImplClass>
-inline bool GenericConnectivityManagerImpl_Thread<ImplClass>::_HaveServiceConnectivityViaThread()
+inline CHIP_ERROR GenericConnectivityManagerImpl_Thread<ImplClass>::_RequestSEDActiveMode(bool onOff)
 {
-    return mFlags.Has(Flags::kHaveServiceConnectivity);
+    return ThreadStackMgrImpl().RequestSEDActiveMode(onOff);
+}
+#endif
+
+template <class ImplClass>
+inline void GenericConnectivityManagerImpl_Thread<ImplClass>::_ResetThreadNetworkDiagnosticsCounts()
+{
+    ThreadStackMgrImpl().ResetThreadNetworkDiagnosticsCounts();
+}
+
+template <class ImplClass>
+inline CHIP_ERROR
+GenericConnectivityManagerImpl_Thread<ImplClass>::_WriteThreadNetworkDiagnosticAttributeToTlv(AttributeId attributeId,
+                                                                                              app::AttributeValueEncoder & encoder)
+{
+    return ThreadStackMgrImpl().WriteThreadNetworkDiagnosticAttributeToTlv(attributeId, encoder);
 }
 
 } // namespace Internal

@@ -24,37 +24,14 @@
  **/
 #include "DeviceCallbacks.h"
 
-#include "esp_heap_caps.h"
-#include "esp_log.h"
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/cluster-id.h>
-#include <support/CodeUtils.h>
-
 static const char * TAG = "echo-devicecallbacks";
 
 using namespace ::chip;
 using namespace ::chip::Inet;
 using namespace ::chip::System;
-using namespace ::chip::DeviceLayer;
 
-void DeviceCallbacks::DeviceEventCallback(const ChipDeviceEvent * event, intptr_t arg)
-{
-    switch (event->Type)
-    {
-    case DeviceEventType::kInternetConnectivityChange:
-        OnInternetConnectivityChange(event);
-        break;
-
-    case DeviceEventType::kSessionEstablished:
-        OnSessionEstablished(event);
-        break;
-    }
-
-    ESP_LOGI(TAG, "Current free heap: %d\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-}
-
-void DeviceCallbacks::PostAttributeChangeCallback(EndpointId endpointId, ClusterId clusterId, AttributeId attributeId, uint8_t mask,
-                                                  uint16_t manufacturerCode, uint8_t type, uint16_t size, uint8_t * value)
+void AppDeviceCallbacks::PostAttributeChangeCallback(EndpointId endpointId, ClusterId clusterId, AttributeId attributeId,
+                                                     uint8_t type, uint16_t size, uint8_t * value)
 {
     ESP_LOGI(TAG, "PostAttributeChangeCallback - Cluster ID: '0x%04x', EndPoint ID: '0x%02x', Attribute ID: '0x%04x'", clusterId,
              endpointId, attributeId);
@@ -63,32 +40,4 @@ void DeviceCallbacks::PostAttributeChangeCallback(EndpointId endpointId, Cluster
     ESP_LOGI(TAG, "Unhandled cluster ID: %d", clusterId);
 
     ESP_LOGI(TAG, "Current free heap: %d\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-}
-
-void DeviceCallbacks::OnInternetConnectivityChange(const ChipDeviceEvent * event)
-{
-    if (event->InternetConnectivityChange.IPv4 == kConnectivity_Established)
-    {
-        ESP_LOGI(TAG, "Server ready at: %s:%d", event->InternetConnectivityChange.address, CHIP_PORT);
-    }
-    else if (event->InternetConnectivityChange.IPv4 == kConnectivity_Lost)
-    {
-        ESP_LOGE(TAG, "Lost IPv4 connectivity...");
-    }
-    if (event->InternetConnectivityChange.IPv6 == kConnectivity_Established)
-    {
-        ESP_LOGI(TAG, "IPv6 Server ready...");
-    }
-    else if (event->InternetConnectivityChange.IPv6 == kConnectivity_Lost)
-    {
-        ESP_LOGE(TAG, "Lost IPv6 connectivity...");
-    }
-}
-
-void DeviceCallbacks::OnSessionEstablished(const ChipDeviceEvent * event)
-{
-    if (event->SessionEstablished.IsCommissioner)
-    {
-        ESP_LOGI(TAG, "Commissioner detected!");
-    }
 }

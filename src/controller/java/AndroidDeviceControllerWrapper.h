@@ -1,5 +1,5 @@
 /*
- *   Copyright (c) 2020 Project CHIP Authors
+ *   Copyright (c) 2020-2022 Project CHIP Authors
  *   All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +17,18 @@
  */
 #pragma once
 
-#include "JniReferences.h"
+#include <lib/support/JniReferences.h>
 
 #include <memory>
 
 #include <jni.h>
 
 #include <controller/CHIPDeviceController.h>
-#include <controller/ExampleOperationalCredentialsIssuer.h>
+#include <credentials/GroupDataProviderImpl.h>
+#include <lib/support/TimeUtils.h>
 #include <platform/internal/DeviceNetworkInfo.h>
+
+#include "AndroidOperationalCredentialsIssuer.h"
 
 /**
  * This class contains all relevant information for the JNI view of CHIPDeviceController
@@ -33,41 +36,29 @@
  *
  * Generally it contains the DeviceController class itself, plus any related delegates/callbacks.
  */
-class AndroidDeviceControllerWrapper : public chip::Controller::DevicePairingDelegate,
-                                       public chip::Controller::DeviceStatusDelegate,
-                                       public chip::PersistentStorageDelegate
+class AndroidDeviceControllerWrapper : public chip::Controller::DevicePairingDelegate, public chip::PersistentStorageDelegate
 {
 public:
     ~AndroidDeviceControllerWrapper();
 
-    // Use StackUnlockGuard to temporarily unlock the CHIP BLE stack, e.g. when calling application
-    // or Android BLE code as a result of a BLE event.
-    struct StackUnlockGuard
-    {
-    public:
-        StackUnlockGuard(pthread_mutex_t * mutex) : mMutex(mutex) { pthread_mutex_unlock(mMutex); }
-        ~StackUnlockGuard() { pthread_mutex_lock(mMutex); }
-
-    private:
-        pthread_mutex_t * mMutex;
-    };
-
     chip::Controller::DeviceCommissioner * Controller() { return mController.get(); }
-    chip::Controller::ExampleOperationalCredentialsIssuer & OpCredsIssuer() { return mOpCredsIssuer; }
     void SetJavaObjectRef(JavaVM * vm, jobject obj);
     jobject JavaObjectRef() { return mJavaObjectRef; }
     jlong ToJNIHandle();
 
     void CallJavaMethod(const char * methodName, jint argument);
+    CHIP_ERROR InitializeOperationalCredentialsIssuer();
+
+    /**
+     * Convert network credentials from Java, and apply them to the commissioning parameters object.
+     */
+    CHIP_ERROR ApplyNetworkCredentials(chip::Controller::CommissioningParameters & params, jobject networkCredentials);
 
     // DevicePairingDelegate implementation
     void OnStatusUpdate(chip::Controller::DevicePairingDelegate::Status status) override;
     void OnPairingComplete(CHIP_ERROR error) override;
     void OnPairingDeleted(CHIP_ERROR error) override;
-
-    // DeviceStatusDelegate implementation
-    void OnMessage(chip::System::PacketBufferHandle && msg) override;
-    void OnStatusChange(void) override;
+    void OnCommissioningComplete(chip::NodeId deviceId, CHIP_ERROR error) override;
 
     // PersistentStorageDelegate implementation
     CHIP_ERROR SyncSetKeyValue(const char * key, const void * value, uint16_t size) override;
@@ -79,23 +70,36 @@ public:
         return reinterpret_cast<AndroidDeviceControllerWrapper *>(handle);
     }
 
-    static AndroidDeviceControllerWrapper * AllocateNew(JavaVM * vm, jobject deviceControllerObj, pthread_mutex_t * stackLock,
-                                                        chip::NodeId nodeId, chip::System::Layer * systemLayer,
-                                                        chip::Inet::InetLayer * inetLayer, CHIP_ERROR * errInfoOnFailure);
+    using AndroidOperationalCredentialsIssuerPtr = std::unique_ptr<chip::Controller::AndroidOperationalCredentialsIssuer>;
+
+    static AndroidDeviceControllerWrapper * AllocateNew(JavaVM * vm, jobject deviceControllerObj, chip::NodeId nodeId,
+                                                        const chip::CATValues & cats, chip::System::Layer * systemLayer,
+                                                        chip::Inet::EndPointManager<chip::Inet::TCPEndPoint> * tcpEndPointManager,
+                                                        chip::Inet::EndPointManager<chip::Inet::UDPEndPoint> * udpEndPointManager,
+                                                        AndroidOperationalCredentialsIssuerPtr opCredsIssuer,
+                                                        CHIP_ERROR * errInfoOnFailure);
 
 private:
     using ChipDeviceControllerPtr = std::unique_ptr<chip::Controller::DeviceCommissioner>;
 
     ChipDeviceControllerPtr mController;
-    chip::Controller::ExampleOperationalCredentialsIssuer mOpCredsIssuer;
-
-    pthread_mutex_t * mStackLock;
+    AndroidOperationalCredentialsIssuerPtr mOpCredsIssuer;
+    // TODO: This may need to be injected as a GroupDataProvider*
+    chip::Credentials::GroupDataProviderImpl mGroupDataProvider;
 
     JavaVM * mJavaVM       = nullptr;
     jobject mJavaObjectRef = nullptr;
 
-    AndroidDeviceControllerWrapper(ChipDeviceControllerPtr controller, pthread_mutex_t * stackLock) :
-        mController(std::move(controller)), mStackLock(stackLock)
+    // These fields allow us to release the string/byte array memory later.
+    jstring ssidStr                    = nullptr;
+    jstring passwordStr                = nullptr;
+    const char * ssid                  = nullptr;
+    const char * password              = nullptr;
+    jbyteArray operationalDatasetBytes = nullptr;
+    jbyte * operationalDataset         = nullptr;
+
+    AndroidDeviceControllerWrapper(ChipDeviceControllerPtr controller, AndroidOperationalCredentialsIssuerPtr opCredsIssuer) :
+        mController(std::move(controller)), mOpCredsIssuer(std::move(opCredsIssuer))
     {}
 };
 

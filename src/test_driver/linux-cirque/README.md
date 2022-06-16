@@ -10,6 +10,15 @@ In Project CHIP, cirque is used for integration tests.
 There is a script for running cirque tests, you can find it at
 `scripts/tests/cirque_tests.sh`
 
+## "Docker out of docker" setup
+
+If you don't want cirque break your local environment, you can enter a
+environment insider docker
+
+```
+integrations/docker/images/chip-build-cirque/run.sh --privileged --volume /dev/pts:/dev/pts --volume /tmp:/tmp -it -- bash
+```
+
 ## Setting up cirque environment
 
 After checkout, in your local project chip directory, run:
@@ -38,7 +47,7 @@ You can run the tests by:
 scripts/tests/cirque_tests.sh run_all_tests
 ```
 
-You can get more infomation from the terminal output (like the location of
+You can get more information from the terminal output (like the location of
 logs).
 
 > Note: The container (as well as the networks) will be preserved for debugging.
@@ -65,7 +74,7 @@ The output of the test will be written to `stdout` and `stderr`.
 
 ## Specify log directory
 
-To specify log directory, simplily set `LOG_DIR` variable.
+To specify log directory, simply set `LOG_DIR` variable.
 
 ```
 export LOG_DIR=/some/log/directory
@@ -85,7 +94,14 @@ LOG_DIR=/some/log/directory scripts/tests/cirque_tests.sh run_test OnOffClusterT
 You can run a ManualTest to setup test topology only:
 
 ```
-scripts/tests/cirque_tests.sh run_test ManualTest
+./scripts/tests/cirque_tests.sh run_test ManualTest -t <topology file>
+```
+
+The topology file is a JSON file, which contains the definition of each node in
+the network.
+
+```
+./scripts/tests/cirque_tests.sh run_test ManualTest -t src/test_driver/linux-cirque/topologies/three_node_with_thread.json
 ```
 
 It will print the container id in log, you can execute commands inside them.
@@ -115,4 +131,5 @@ It will print the container id in log, you can execute commands inside them.
 After you finished you test, press `Ctrl-C` and it will clean up testing
 environment.
 
-Refer to `test-manual.py` and `ManualTest.sh` for detail.
+Refer to `test-manual.py`, `ManualTest.sh`, and topologies file under
+`topologies` for detail.

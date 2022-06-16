@@ -18,48 +18,95 @@
 
 #include "TestCommand.h"
 
-constexpr uint16_t kWaitDurationInSeconds = 30;
-
-static void test_os_sleep_ms(uint64_t millisecs)
+CHIP_ERROR TestCommand::RunCommand()
 {
-    struct timespec sleep_time;
-    uint64_t s = millisecs / 1000;
+    if (mPICSFilePath.HasValue())
+    {
+        PICS.SetValue(PICSBooleanReader::Read(mPICSFilePath.Value()));
+    }
 
-    millisecs -= s * 1000;
-    sleep_time.tv_sec  = static_cast<time_t>(s);
-    sleep_time.tv_nsec = static_cast<long>(millisecs * 1000000);
+    NextTest();
 
-    nanosleep(&sleep_time, nullptr);
+    return CHIP_NO_ERROR;
 }
 
-CHIP_ERROR TestCommand::Run(PersistentStorage & storage, NodeId localId, NodeId remoteId)
+CHIP_ERROR TestCommand::WaitForCommissionee(const char * identity,
+                                            const chip::app::Clusters::DelayCommands::Commands::WaitForCommissionee::Type & value)
 {
-    ReturnErrorOnFailure(mOpCredsIssuer.Initialize(storage));
+    chip::FabricIndex fabricIndex;
 
-    chip::Controller::CommissionerInitParams params;
+    ReturnErrorOnFailure(GetCommissioner(identity).GetFabricIndex(&fabricIndex));
 
-    params.storageDelegate                = &storage;
-    params.operationalCredentialsDelegate = &mOpCredsIssuer;
+    //
+    // There's a chance the commissionee may have rebooted before this call here as part of a test flow
+    // or is just starting out fresh outright. Let's make sure we're not re-using any cached CASE sessions
+    // that will now be stale and mismatched with the peer, causing subsequent interactions to fail.
+    //
+    GetCommissioner(identity).SessionMgr()->ExpireAllPairings(chip::ScopedNodeId(value.nodeId, fabricIndex));
 
-    ReturnErrorOnFailure(mCommissioner.SetUdpListenPort(storage.GetListenPort()));
-    ReturnErrorOnFailure(mCommissioner.Init(localId, params));
-    ReturnErrorOnFailure(mCommissioner.ServiceEvents());
-    ReturnErrorOnFailure(mCommissioner.GetDevice(remoteId, &mDevice));
+    SetIdentity(identity);
+    return GetCommissioner(identity).GetConnectedDevice(value.nodeId, &mOnDeviceConnectedCallback,
+                                                        &mOnDeviceConnectionFailureCallback);
+}
 
-    ReturnErrorOnFailure(NextTest());
+void TestCommand::OnDeviceConnectedFn(void * context, chip::OperationalDeviceProxy * device)
+{
+    ChipLogProgress(chipTool, " **** Test Setup: Device Connected\n");
+    auto * command = static_cast<TestCommand *>(context);
+    VerifyOrReturn(command != nullptr, ChipLogError(chipTool, "Device connected, but cannot run the test, as the context is null"));
+    command->mDevices[command->GetIdentity()] = device;
 
-    UpdateWaitForResponse(true);
-    WaitForResponse(kWaitDurationInSeconds);
+    LogErrorOnFailure(command->ContinueOnChipMainThread(CHIP_NO_ERROR));
+}
 
-    mCommissioner.ServiceEventSignal();
+void TestCommand::OnDeviceConnectionFailureFn(void * context, PeerId peerId, CHIP_ERROR error)
+{
+    ChipLogProgress(chipTool, " **** Test Setup: Device Connection Failure [deviceId=%" PRIu64 ". Error %" CHIP_ERROR_FORMAT "\n]",
+                    peerId.GetNodeId(), error.Format());
+    auto * command = static_cast<TestCommand *>(context);
+    VerifyOrReturn(command != nullptr, ChipLogError(chipTool, "Test command context is null"));
 
-    // Give some time for all the pending messages to flush before shutting down
-    // Note: This is working around racy code in message queues during shutdown
-    // TODO: Remove this workaround once we understand the message queue and shutdown race
-    test_os_sleep_ms(1000);
-    mCommissioner.Shutdown();
+    LogErrorOnFailure(command->ContinueOnChipMainThread(error));
+}
 
-    VerifyOrReturnError(GetCommandExitStatus(), CHIP_ERROR_INTERNAL);
+void TestCommand::ExitAsync(intptr_t context)
+{
+    auto testCommand = reinterpret_cast<TestCommand *>(context);
+    testCommand->InteractionModel::Shutdown();
+    testCommand->SetCommandExitStatus(CHIP_ERROR_INTERNAL);
+}
 
+void TestCommand::Exit(std::string message, CHIP_ERROR err)
+{
+    mContinueProcessing = false;
+
+    LogEnd(message, err);
+
+    if (CHIP_NO_ERROR == err)
+    {
+        InteractionModel::Shutdown();
+        SetCommandExitStatus(err);
+    }
+    else
+    {
+        chip::DeviceLayer::PlatformMgr().ScheduleWork(ExitAsync, reinterpret_cast<intptr_t>(this));
+    }
+}
+
+CHIP_ERROR TestCommand::ContinueOnChipMainThread(CHIP_ERROR err)
+{
+    if (mContinueProcessing == false)
+    {
+        return CHIP_NO_ERROR;
+    }
+
+    if (CHIP_NO_ERROR == err)
+    {
+        chip::app::Clusters::DelayCommands::Commands::WaitForMs::Type value;
+        value.ms = 0;
+        return WaitForMs(GetIdentity().c_str(), value);
+    }
+
+    Exit(chip::ErrorStr(err), err);
     return CHIP_NO_ERROR;
 }

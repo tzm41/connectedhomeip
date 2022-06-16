@@ -32,14 +32,16 @@ namespace Shell {
 
 static int chip_command_handler(int argc, char ** argv)
 {
+    CHIP_ERROR err;
     if (argc > 0)
     {
-        return Engine::Root().ExecCommand(argc - 1, argv + 1);
+        err = Engine::Root().ExecCommand(argc - 1, argv + 1);
     }
     else
     {
-        return CHIP_ERROR_INVALID_ARGUMENT;
+        err = CHIP_ERROR_INVALID_ARGUMENT;
     }
+    return static_cast<int>(err.AsInteger());
 }
 
 int streamer_esp32_init(streamer_t * streamer)
@@ -49,8 +51,10 @@ int streamer_esp32_init(streamer_t * streamer)
     setvbuf(stdin, NULL, _IONBF, 0);
     esp_vfs_dev_uart_port_set_rx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_CR);
     esp_vfs_dev_uart_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_CRLF);
-
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
+    if (!uart_is_driver_installed(CONFIG_ESP_CONSOLE_UART_NUM))
+    {
+        ESP_ERROR_CHECK(uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 256, 0, 0, NULL, 0));
+    }
     uart_config_t uart_config = {
         .baud_rate           = 115200,
         .data_bits           = UART_DATA_8_BITS,
@@ -60,7 +64,7 @@ int streamer_esp32_init(streamer_t * streamer)
         .rx_flow_ctrl_thresh = 0,
         .source_clk          = UART_SCLK_APB,
     };
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM_0, &uart_config));
+    ESP_ERROR_CHECK(uart_param_config(CONFIG_ESP_CONSOLE_UART_NUM, &uart_config));
     esp_vfs_dev_uart_use_driver(0);
     esp_console_config_t console_config = {
         .max_cmdline_length = 256,
@@ -70,8 +74,15 @@ int streamer_esp32_init(streamer_t * streamer)
     linenoiseSetMultiLine(1);
     linenoiseHistorySetMaxLen(100);
 
-    esp_console_cmd_t command = { .command = "chip", .help = "CHIP utilities", .func = chip_command_handler };
+    if (linenoiseProbe())
+    {
+        // Set if terminal does not recognize escape sequences.
+        linenoiseSetDumbMode(1);
+    }
+
+    esp_console_cmd_t command = { .command = "matter", .help = "Matter utilities", .func = chip_command_handler };
     ESP_ERROR_CHECK(esp_console_cmd_register(&command));
+    ESP_ERROR_CHECK(esp_console_register_help_command());
     return 0;
 }
 
@@ -82,7 +93,7 @@ ssize_t streamer_esp32_read(streamer_t * streamer, char * buf, size_t len)
 
 ssize_t streamer_esp32_write(streamer_t * streamer, const char * buf, size_t len)
 {
-    return fprintf(stdout, buf, len);
+    return uart_write_bytes(CONFIG_ESP_CONSOLE_UART_NUM, buf, len);
 }
 
 static streamer_t streamer_stdio = {

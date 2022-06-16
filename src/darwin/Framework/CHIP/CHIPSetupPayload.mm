@@ -16,6 +16,7 @@
  */
 
 #import "CHIPError.h"
+#import "CHIPError_Internal.h"
 #import "CHIPSetupPayload_Internal.h"
 #import <setup_payload/SetupPayload.h>
 
@@ -30,26 +31,28 @@
 {
     if (value.Has(chip::RendezvousInformationFlag::kBLE)) {
         return kRendezvousInformationBLE;
-    } else if (value.Has(chip::RendezvousInformationFlag::kSoftAP)) {
-        return kRendezvousInformationSoftAP;
-    } else if (value.Has(chip::RendezvousInformationFlag::kOnNetwork)) {
-        return kRendezvousInformationOnNetwork;
-    } else {
-        return kRendezvousInformationNone;
     }
+    if (value.Has(chip::RendezvousInformationFlag::kSoftAP)) {
+        return kRendezvousInformationSoftAP;
+    }
+    if (value.Has(chip::RendezvousInformationFlag::kOnNetwork)) {
+        return kRendezvousInformationOnNetwork;
+    }
+    return kRendezvousInformationNone;
 }
 
 - (CHIPCommissioningFlow)convertCommissioningFlow:(chip::CommissioningFlow)value
 {
     if (value == chip::CommissioningFlow::kStandard) {
         return kCommissioningFlowStandard;
-    } else if (value == chip::CommissioningFlow::kUserActionRequired) {
-        return kCommissioningFlowUserActionRequired;
-    } else if (value == chip::CommissioningFlow::kCustom) {
-        return kCommissioningFlowCustom;
-    } else {
-        return kCommissioningFlowInvalid;
     }
+    if (value == chip::CommissioningFlow::kUserActionRequired) {
+        return kCommissioningFlowUserActionRequired;
+    }
+    if (value == chip::CommissioningFlow::kCustom) {
+        return kCommissioningFlowCustom;
+    }
+    return kCommissioningFlowInvalid;
 }
 
 - (id)initWithSetupPayload:(chip::SetupPayload)setupPayload

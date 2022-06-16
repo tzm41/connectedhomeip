@@ -32,63 +32,64 @@
 
 namespace chip {
 namespace System {
-namespace Platform {
-namespace Layer {
+namespace Clock {
 
-static uint64_t sBootTimeUS = 0;
+namespace Internal {
 
-uint64_t GetClock_Monotonic(void)
+ClockImpl gClockImpl;
+
+} // namespace Internal
+
+namespace {
+
+// Last known UTC time in Unix format.
+#ifdef CHIP_DEVICE_CONFIG_FIRMWARE_BUILD_UNIX_TIME
+Microseconds64 gRealTime = Seconds64(CHIP_DEVICE_CONFIG_FIRMWARE_BUILD_UNIX_TIME);
+#else
+Microseconds64 gRealTime = Seconds64(CHIP_SYSTEM_CONFIG_VALID_REAL_TIME_THRESHOLD);
+#endif
+
+// Monotonic time of setting the last known UTC time.
+Microseconds64 gRealTimeSetTime;
+
+} // namespace
+
+Microseconds64 ClockImpl::GetMonotonicMicroseconds64()
 {
-    return k_ticks_to_us_floor64(k_uptime_ticks());
+    return Microseconds64(k_ticks_to_us_floor64(k_uptime_ticks()));
 }
 
-uint64_t GetClock_MonotonicMS(void)
+Milliseconds64 ClockImpl::GetMonotonicMilliseconds64()
 {
-    return k_uptime_get();
+    return Milliseconds64(k_uptime_get());
 }
 
-uint64_t GetClock_MonotonicHiRes(void)
+CHIP_ERROR ClockImpl::GetClock_RealTime(Microseconds64 & aCurTime)
 {
-    return GetClock_Monotonic();
+    aCurTime = GetMonotonicMicroseconds64() - gRealTimeSetTime + gRealTime;
+
+    return CHIP_NO_ERROR;
 }
 
-Error GetClock_RealTime(uint64_t & curTime)
+CHIP_ERROR ClockImpl::GetClock_RealTimeMS(Milliseconds64 & aCurTime)
 {
-    if (sBootTimeUS == 0)
-    {
-        return CHIP_SYSTEM_ERROR_REAL_TIME_NOT_SYNCED;
-    }
-    curTime = sBootTimeUS + GetClock_Monotonic();
-    return CHIP_SYSTEM_NO_ERROR;
+    Microseconds64 curTimeUs;
+
+    ReturnErrorOnFailure(GetClock_RealTime(curTimeUs));
+    aCurTime = std::chrono::duration_cast<Milliseconds64>(curTimeUs);
+
+    return CHIP_NO_ERROR;
 }
 
-Error GetClock_RealTimeMS(uint64_t & curTime)
+CHIP_ERROR ClockImpl::SetClock_RealTime(Microseconds64 aNewCurTime)
 {
-    if (sBootTimeUS == 0)
-    {
-        return CHIP_SYSTEM_ERROR_REAL_TIME_NOT_SYNCED;
-    }
-    curTime = (sBootTimeUS + GetClock_Monotonic()) / 1000;
-    return CHIP_SYSTEM_NO_ERROR;
+    gRealTime        = aNewCurTime;
+    gRealTimeSetTime = GetMonotonicMicroseconds64();
+
+    return CHIP_NO_ERROR;
 }
 
-Error SetClock_RealTime(uint64_t newCurTime)
-{
-    // FIXME: make thread-safe or update comment in SystemClock.h
-    uint64_t timeSinceBootUS = GetClock_Monotonic();
-    if (newCurTime > timeSinceBootUS)
-    {
-        sBootTimeUS = newCurTime - timeSinceBootUS;
-    }
-    else
-    {
-        sBootTimeUS = 0;
-    }
-    return CHIP_SYSTEM_NO_ERROR;
-}
-
-} // namespace Layer
-} // namespace Platform
+} // namespace Clock
 } // namespace System
 } // namespace chip
 

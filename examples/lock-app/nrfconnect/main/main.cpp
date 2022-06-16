@@ -19,64 +19,16 @@
 
 #include "AppTask.h"
 
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 
-#include <platform/CHIPDeviceLayer.h>
-#include <support/CHIPMem.h>
-
-LOG_MODULE_REGISTER(app);
+LOG_MODULE_REGISTER(app, CONFIG_MATTER_LOG_LEVEL);
 
 using namespace ::chip;
-using namespace ::chip::Inet;
-using namespace ::chip::DeviceLayer;
 
 int main()
 {
-    int ret = 0;
+    CHIP_ERROR err = GetAppTask().StartApp();
 
-    k_thread_priority_set(k_current_get(), K_PRIO_COOP(CONFIG_NUM_COOP_PRIORITIES - 1));
-
-    ret = chip::Platform::MemoryInit();
-    if (ret != CHIP_NO_ERROR)
-    {
-        LOG_ERR("Platform::MemoryInit() failed");
-        goto exit;
-    }
-
-    LOG_INF("Init CHIP stack");
-    ret = PlatformMgr().InitChipStack();
-    if (ret != CHIP_NO_ERROR)
-    {
-        LOG_ERR("PlatformMgr().InitChipStack() failed");
-        goto exit;
-    }
-
-    LOG_INF("Starting CHIP task");
-    ret = PlatformMgr().StartEventLoopTask();
-    if (ret != CHIP_NO_ERROR)
-    {
-        LOG_ERR("PlatformMgr().StartEventLoopTask() failed");
-        goto exit;
-    }
-
-    LOG_INF("Init Thread stack");
-    ret = ThreadStackMgr().InitThreadStack();
-    if (ret != CHIP_NO_ERROR)
-    {
-        LOG_ERR("ThreadStackMgr().InitThreadStack() failed");
-        goto exit;
-    }
-
-    ret = ConnectivityMgr().SetThreadDeviceType(ConnectivityManager::kThreadDeviceType_MinimalEndDevice);
-    if (ret != CHIP_NO_ERROR)
-    {
-        LOG_ERR("ConnectivityMgr().SetThreadDeviceType() failed");
-        goto exit;
-    }
-
-    ret = GetAppTask().StartApp();
-
-exit:
-    LOG_ERR("Exited with code %d", ret);
-    return ret;
+    LOG_ERR("Exited with code %" CHIP_ERROR_FORMAT, err.Format());
+    return err == CHIP_NO_ERROR ? EXIT_SUCCESS : EXIT_FAILURE;
 }

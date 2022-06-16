@@ -21,44 +21,52 @@
 
 #include "AppEvent.h"
 #include "BoltLockManager.h"
+#include "LEDWidget.h"
 
 #include <platform/CHIPDeviceLayer.h>
+
+#ifdef CONFIG_MCUMGR_SMP_BT
+#include "DFUOverSMP.h"
+#endif
 
 struct k_timer;
 
 class AppTask
 {
 public:
-    int StartApp();
+    CHIP_ERROR StartApp();
 
-    void PostLockActionRequest(int32_t aActor, BoltLockManager::Action_t aAction);
     void PostEvent(AppEvent * event);
-    void UpdateClusterState();
+    void UpdateClusterState(BoltLockManager::State state, BoltLockManager::OperationSource source);
 
 private:
     friend AppTask & GetAppTask(void);
 
-    int Init();
+    CHIP_ERROR Init();
 
-    static void ActionInitiated(BoltLockManager::Action_t aAction, int32_t aActor);
-    static void ActionCompleted(BoltLockManager::Action_t aAction, int32_t aActor);
+    static void LockStateChanged(BoltLockManager::State state, BoltLockManager::OperationSource source);
 
     void CancelTimer(void);
 
     void DispatchEvent(AppEvent * event);
 
+    static void UpdateStatusLED();
+    static void LEDStateUpdateHandler(LEDWidget & ledWidget);
+    static void UpdateLedStateEventHandler(AppEvent * aEvent);
     static void FunctionTimerEventHandler(AppEvent * aEvent);
     static void FunctionHandler(AppEvent * aEvent);
     static void StartThreadHandler(AppEvent * aEvent);
     static void LockActionEventHandler(AppEvent * aEvent);
     static void StartBLEAdvertisementHandler(AppEvent * aEvent);
 
-    static void ThreadProvisioningHandler(const chip::DeviceLayer::ChipDeviceEvent * event, intptr_t arg);
+    static void ChipEventHandler(const chip::DeviceLayer::ChipDeviceEvent * event, intptr_t arg);
 
     static void ButtonEventHandler(uint32_t buttons_state, uint32_t has_changed);
     static void TimerEventHandler(k_timer * timer);
 
-    static int SoftwareUpdateConfirmationHandler(uint32_t offset, uint32_t size, void * arg);
+#ifdef CONFIG_MCUMGR_SMP_BT
+    static void RequestSMPAdvertisingStart(void);
+#endif
 
     void StartTimer(uint32_t aTimeoutInMs);
 
@@ -71,9 +79,8 @@ private:
         kFunction_Invalid
     };
 
-    Function_t mFunction        = kFunction_NoneSelected;
-    bool mFunctionTimerActive   = false;
-    bool mSoftwareUpdateEnabled = false;
+    Function_t mFunction      = kFunction_NoneSelected;
+    bool mFunctionTimerActive = false;
     static AppTask sAppTask;
 };
 

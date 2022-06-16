@@ -54,6 +54,7 @@ class CHIPVirtualHome:
         self.device_ids = []
         self.devices = []
         self.non_ap_devices = []
+        self.thread_devices = []
         self.ap_devices = []
 
     # The entrance of the whole test
@@ -138,18 +139,22 @@ class CHIPVirtualHome:
             devices = [devices]
         for device_id in devices:
             # Wait for otbr-agent and CHIP server start
-            self.assertTrue(self.wait_for_device_output(device_id, "Border router agent started.", 10))
-            self.assertTrue(self.wait_for_device_output(device_id, "CHIP:SVR: Server Listening...", 10))
+            self.assertTrue(self.wait_for_device_output(
+                device_id, "Border router agent started.", 10))
+            self.assertTrue(self.wait_for_device_output(
+                device_id, "CHIP:SVR: Server Listening...", 15))
             # Clear default Thread network commissioning data
             self.logger.info("Resetting thread network on {}".format(
                 self.get_device_pretty_id(device_id)))
             self.execute_device_cmd(device_id, 'ot-ctl factoryreset')
-            self.check_device_thread_state(device_id=device_id, expected_role="disabled", timeout=10)
+            self.check_device_thread_state(
+                device_id=device_id, expected_role="disabled", timeout=10)
 
     def check_device_thread_state(self, device_id, expected_role, timeout):
         if isinstance(expected_role, str):
             expected_role = [expected_role]
-        self.logger.info(f"Waiting for expected role. {self.get_device_pretty_id(device_id)}: {expected_role}")
+        self.logger.info(
+            f"Waiting for expected role. {self.get_device_pretty_id(device_id)}: {expected_role}")
         start = time.time()
         while time.time() < (start + timeout):
             reply = self.execute_device_cmd(device_id, 'ot-ctl state')
@@ -157,7 +162,8 @@ class CHIPVirtualHome:
                 return
             time.sleep(0.5)
 
-        self.logger.error(f"Device {self.get_device_pretty_id(device_id)} does not reach expected role")
+        self.logger.error(
+            f"Device {self.get_device_pretty_id(device_id)} does not reach expected role")
         raise AssertionError
 
     def form_thread_network(self, device_id: str, expected_role: Union[str, List[str]], timeout: int = 15,
@@ -185,10 +191,12 @@ class CHIPVirtualHome:
             "ot-ctl thread start",
             "ot-ctl dataset active",
         ]
-        self.logger.info(f"Setting Thread dataset for {self.get_device_pretty_id(device_id)}: {dataset}")
+        self.logger.info(
+            f"Setting Thread dataset for {self.get_device_pretty_id(device_id)}: {dataset}")
         for cmd in ot_init_commands:
             self.execute_device_cmd(device_id, cmd)
-        self.check_device_thread_state(device_id=device_id, expected_role=expected_role, timeout=timeout)
+        self.check_device_thread_state(
+            device_id=device_id, expected_role=expected_role, timeout=timeout)
 
     def connect_to_thread_network(self):
         '''
@@ -198,8 +206,9 @@ class CHIPVirtualHome:
         this network.
         '''
         self.logger.info("Running commands to form default Thread network")
-        for device in self.non_ap_devices:
-            self.wait_for_device_output(device['id'], "Border router agent started.", 5)
+        for device in self.thread_devices:
+            self.wait_for_device_output(
+                device['id'], "Border router agent started.", 5)
 
         otInitCommands = [
             "ot-ctl thread stop",
@@ -207,9 +216,9 @@ class CHIPVirtualHome:
             "ot-ctl dataset set active 0e080000000000010000000300000d35060004001fffe00208dead00beef00cafe0708fd01234567890abc051000112233445566778899aabbccddeeff030a4f70656e546872656164010212340410ad463152f9622c7297ec6c6c543a63e70c0302a0ff",
             "ot-ctl ifconfig up",
             "ot-ctl thread start",
-            "ot-ctl dataset active", # Emit
+            "ot-ctl dataset active",  # Emit
         ]
-        for device in self.non_ap_devices:
+        for device in self.thread_devices:
             # Set default openthread provisioning
             for cmd in otInitCommands:
                 self.execute_device_cmd(device['id'], cmd)
@@ -217,11 +226,12 @@ class CHIPVirtualHome:
         threadNetworkFormed = False
         for i in range(30):
             roles = list()
-            for device in self.non_ap_devices:
+            for device in self.thread_devices:
                 # We can only check the status of ot-agent by query its state.
                 reply = self.execute_device_cmd(device['id'], 'ot-ctl state')
                 roles.append(reply['output'].split()[0])
-            threadNetworkFormed = (roles.count('leader') == 1) and (roles.count('leader') + roles.count('router') + roles.count('child') == len(self.non_ap_devices))
+            threadNetworkFormed = (roles.count('leader') == 1) and (roles.count(
+                'leader') + roles.count('router') + roles.count('child') == len(self.thread_devices))
             if threadNetworkFormed:
                 break
             time.sleep(1)
@@ -266,7 +276,7 @@ class CHIPVirtualHome:
     def get_device_log(self, device_id):
         return self.query_api('device_log', [self.home_id, device_id], binary=True)
 
-    def wait_for_device_output(self, device_id, pattern, timeout = 1):
+    def wait_for_device_output(self, device_id, pattern, timeout=1):
         due = time.time() + timeout
         while True:
             if self.sequenceMatch(self.get_device_log(device_id).decode(), [pattern, ]):
@@ -348,6 +358,8 @@ class CHIPVirtualHome:
         self.device_ids = [device_id for device_id in self.device_config]
         self.non_ap_devices = [device for device in self.device_config.values()
                                if device['type'] != 'wifi_ap']
+        self.thread_devices = [device for device in self.device_config.values()
+                               if device['capability'].get('Thread', None) is not None]
         self.ap_devices = [device for device in self.device_config.values()
                            if device['type'] == 'wifi_ap']
 

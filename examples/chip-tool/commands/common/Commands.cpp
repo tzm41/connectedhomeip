@@ -23,12 +23,8 @@
 #include <algorithm>
 #include <string>
 
-#if CONFIG_DEVICE_LAYER
-#include <platform/CHIPDeviceLayer.h>
-#endif
-
-#include <support/CHIPMem.h>
-#include <support/CodeUtils.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/CodeUtils.h>
 
 void Commands::Register(const char * clusterName, commands_list commandsList)
 {
@@ -38,35 +34,40 @@ void Commands::Register(const char * clusterName, commands_list commandsList)
     }
 }
 
-// TODO: Remove this work around due to crashes when storage is accessed from multiple threads and passed around
-static PersistentStorage gStorage;
-int Commands::Run(NodeId localId, NodeId remoteId, int argc, char ** argv)
+int Commands::Run(int argc, char ** argv)
 {
     CHIP_ERROR err = CHIP_NO_ERROR;
 
     err = chip::Platform::MemoryInit();
     VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init Memory failure: %s", chip::ErrorStr(err)));
 
-#if CHIP_DEVICE_LAYER_TARGET_LINUX && CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
-    // By default, Linux device is configured as a BLE peripheral while the controller needs a BLE central.
-    SuccessOrExit(err = chip::DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(/* BLE adapter ID */ 0, /* BLE central */ true));
-#endif
-
-    err = gStorage.Init();
+#ifdef CONFIG_USE_LOCAL_STORAGE
+    err = mStorage.Init();
     VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(Controller, "Init Storage failure: %s", chip::ErrorStr(err)));
 
-    chip::Logging::SetLogFilter(gStorage.GetLoggingLevel());
+    chip::Logging::SetLogFilter(mStorage.GetLoggingLevel());
+#endif // CONFIG_USE_LOCAL_STORAGE
 
-    err = RunCommand(gStorage, localId, remoteId, argc, argv);
-    SuccessOrExit(err);
+    err = RunCommand(argc, argv);
+    VerifyOrExit(err == CHIP_NO_ERROR, ChipLogError(chipTool, "Run command failure: %s", chip::ErrorStr(err)));
 
 exit:
     return (err == CHIP_NO_ERROR) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, NodeId remoteId, int argc, char ** argv)
+int Commands::RunInteractive(int argc, char ** argv)
 {
-    CHIP_ERROR err = CHIP_NO_ERROR;
+    CHIP_ERROR err = RunCommand(argc, argv, true);
+    if (err == CHIP_NO_ERROR)
+    {
+        return EXIT_SUCCESS;
+    }
+    ChipLogError(chipTool, "Run command failure: %s", chip::ErrorStr(err));
+    return EXIT_FAILURE;
+}
+
+CHIP_ERROR Commands::RunCommand(int argc, char ** argv, bool interactive)
+{
     std::map<std::string, CommandsVector>::iterator cluster;
     Command * command = nullptr;
 
@@ -74,7 +75,7 @@ CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, Nod
     {
         ChipLogError(chipTool, "Missing cluster name");
         ShowClusters(argv[0]);
-        ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+        return CHIP_ERROR_INVALID_ARGUMENT;
     }
 
     cluster = GetCluster(argv[1]);
@@ -82,14 +83,14 @@ CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, Nod
     {
         ChipLogError(chipTool, "Unknown cluster: %s", argv[1]);
         ShowClusters(argv[0]);
-        ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+        return CHIP_ERROR_INVALID_ARGUMENT;
     }
 
     if (argc <= 2)
     {
         ChipLogError(chipTool, "Missing command name");
         ShowCluster(argv[0], argv[1], cluster->second);
-        ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+        return CHIP_ERROR_INVALID_ARGUMENT;
     }
 
     if (!IsGlobalCommand(argv[2]))
@@ -99,7 +100,24 @@ CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, Nod
         {
             ChipLogError(chipTool, "Unknown command: %s", argv[2]);
             ShowCluster(argv[0], argv[1], cluster->second);
-            ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+            return CHIP_ERROR_INVALID_ARGUMENT;
+        }
+    }
+    else if (IsEventCommand(argv[2]))
+    {
+        if (argc <= 3)
+        {
+            ChipLogError(chipTool, "Missing event name");
+            ShowClusterEvents(argv[0], argv[1], argv[2], cluster->second);
+            return CHIP_ERROR_INVALID_ARGUMENT;
+        }
+
+        command = GetGlobalCommand(cluster->second, argv[2], argv[3]);
+        if (command == nullptr)
+        {
+            ChipLogError(chipTool, "Unknown event: %s", argv[3]);
+            ShowClusterEvents(argv[0], argv[1], argv[2], cluster->second);
+            return CHIP_ERROR_INVALID_ARGUMENT;
         }
     }
     else
@@ -108,7 +126,7 @@ CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, Nod
         {
             ChipLogError(chipTool, "Missing attribute name");
             ShowClusterAttributes(argv[0], argv[1], argv[2], cluster->second);
-            ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+            return CHIP_ERROR_INVALID_ARGUMENT;
         }
 
         command = GetGlobalCommand(cluster->second, argv[2], argv[3]);
@@ -116,25 +134,17 @@ CHIP_ERROR Commands::RunCommand(PersistentStorage & storage, NodeId localId, Nod
         {
             ChipLogError(chipTool, "Unknown attribute: %s", argv[3]);
             ShowClusterAttributes(argv[0], argv[1], argv[2], cluster->second);
-            ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+            return CHIP_ERROR_INVALID_ARGUMENT;
         }
     }
 
     if (!command->InitArguments(argc - 3, &argv[3]))
     {
         ShowCommand(argv[0], argv[1], command);
-        ExitNow(err = CHIP_ERROR_INVALID_ARGUMENT);
+        return CHIP_ERROR_INVALID_ARGUMENT;
     }
 
-    err = command->Run(storage, localId, remoteId);
-    if (err != CHIP_NO_ERROR)
-    {
-        ChipLogError(chipTool, "Run command failure: %s", chip::ErrorStr(err));
-        ExitNow();
-    }
-
-exit:
-    return err;
+    return interactive ? command->RunAsInteractive() : command->Run();
 }
 
 std::map<std::string, Commands::CommandsVector>::iterator Commands::GetCluster(std::string clusterName)
@@ -178,9 +188,19 @@ Command * Commands::GetGlobalCommand(CommandsVector & commands, std::string comm
     return nullptr;
 }
 
+bool Commands::IsAttributeCommand(std::string commandName) const
+{
+    return commandName.compare("read") == 0 || commandName.compare("write") == 0 || commandName.compare("subscribe") == 0;
+}
+
+bool Commands::IsEventCommand(std::string commandName) const
+{
+    return commandName.compare("read-event") == 0 || commandName.compare("subscribe-event") == 0;
+}
+
 bool Commands::IsGlobalCommand(std::string commandName) const
 {
-    return commandName.compare("read") == 0 || commandName.compare("write") == 0 || commandName.compare("report") == 0;
+    return IsAttributeCommand(commandName) || IsEventCommand(commandName);
 }
 
 void Commands::ShowClusters(std::string executable)
@@ -209,26 +229,36 @@ void Commands::ShowCluster(std::string executable, std::string clusterName, Comm
     fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
     fprintf(stderr, "  | Commands:                                                                           |\n");
     fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
-    bool readCommand   = false;
-    bool writeCommand  = false;
-    bool reportCommand = false;
+    bool readCommand           = false;
+    bool writeCommand          = false;
+    bool subscribeCommand      = false;
+    bool readEventCommand      = false;
+    bool subscribeEventCommand = false;
     for (auto & command : commands)
     {
         bool shouldPrint = true;
 
         if (IsGlobalCommand(command->GetName()))
         {
-            if (strcmp(command->GetName(), "read") == 0 && readCommand == false)
+            if (strcmp(command->GetName(), "read") == 0 && !readCommand)
             {
                 readCommand = true;
             }
-            else if (strcmp(command->GetName(), "write") == 0 && writeCommand == false)
+            else if (strcmp(command->GetName(), "write") == 0 && !writeCommand)
             {
                 writeCommand = true;
             }
-            else if (strcmp(command->GetName(), "report") == 0 && reportCommand == false)
+            else if (strcmp(command->GetName(), "subscribe") == 0 && !subscribeCommand)
             {
-                reportCommand = true;
+                subscribeCommand = true;
+            }
+            else if (strcmp(command->GetName(), "read-event") == 0 && !readEventCommand)
+            {
+                readEventCommand = true;
+            }
+            else if (strcmp(command->GetName(), "subscribe-event") == 0 && !subscribeEventCommand)
+            {
+                subscribeEventCommand = true;
             }
             else
             {
@@ -264,18 +294,64 @@ void Commands::ShowClusterAttributes(std::string executable, std::string cluster
     fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
 }
 
+void Commands::ShowClusterEvents(std::string executable, std::string clusterName, std::string commandName,
+                                 CommandsVector & commands)
+{
+    fprintf(stderr, "Usage:\n");
+    fprintf(stderr, "  %s %s %s event-name [param1 param2 ...]\n", executable.c_str(), clusterName.c_str(), commandName.c_str());
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
+    fprintf(stderr, "  | Events:                                                                             |\n");
+    fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
+    for (auto & command : commands)
+    {
+        if (commandName.compare(command->GetName()) == 0)
+        {
+            fprintf(stderr, "  | * %-82s|\n", command->GetEvent());
+        }
+    }
+    fprintf(stderr, "  +-------------------------------------------------------------------------------------+\n");
+}
+
 void Commands::ShowCommand(std::string executable, std::string clusterName, Command * command)
 {
     fprintf(stderr, "Usage:\n");
 
-    std::string arguments = "";
+    std::string arguments;
+    std::string description;
     arguments += command->GetName();
 
     size_t argumentsCount = command->GetArgumentsCount();
     for (size_t i = 0; i < argumentsCount; i++)
     {
+        std::string arg;
+        bool isOptional = command->GetArgumentIsOptional(i);
+        if (isOptional)
+        {
+            arg += "[--";
+        }
+        arg += command->GetArgumentName(i);
+        if (isOptional)
+        {
+            arg += "]";
+        }
         arguments += " ";
-        arguments += command->GetArgumentName(i);
+        arguments += arg;
+
+        const char * argDescription = command->GetArgumentDescription(i);
+        if ((argDescription != nullptr) && (strlen(argDescription) > 0))
+        {
+            description += "\n";
+            description += arg;
+            description += ":\n  ";
+            description += argDescription;
+            description += "\n";
+        }
     }
     fprintf(stderr, "  %s %s %s\n", executable.c_str(), clusterName.c_str(), arguments.c_str());
+
+    if (description.size() > 0)
+    {
+        fprintf(stderr, "%s\n", description.c_str());
+    }
 }

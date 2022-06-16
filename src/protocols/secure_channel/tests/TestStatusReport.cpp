@@ -16,12 +16,12 @@
  *    limitations under the License.
  */
 
+#include <lib/support/BufferWriter.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/UnitTestRegistration.h>
 #include <protocols/Protocols.h>
 #include <protocols/secure_channel/Constants.h>
 #include <protocols/secure_channel/StatusReport.h>
-#include <support/BufferWriter.h>
-#include <support/CHIPMem.h>
-#include <support/UnitTestRegistration.h>
 #include <system/SystemPacketBuffer.h>
 
 #include <nlunit-test.h>
@@ -33,7 +33,7 @@ using namespace chip::Protocols::SecureChannel;
 void TestStatusReport_NoData(nlTestSuite * inSuite, void * inContext)
 {
     GeneralStatusCode generalCode = GeneralStatusCode::kSuccess;
-    uint32_t protocolId           = SecureChannel::Id.ToFullyQualifiedSpecForm();
+    auto protocolId               = SecureChannel::Id;
     uint16_t protocolCode         = kProtocolCodeSuccess;
 
     StatusReport testReport(generalCode, protocolId, protocolCode);
@@ -59,7 +59,7 @@ void TestStatusReport_NoData(nlTestSuite * inSuite, void * inContext)
 void TestStatusReport_WithData(nlTestSuite * inSuite, void * inContext)
 {
     GeneralStatusCode generalCode      = GeneralStatusCode::kFailure;
-    uint32_t protocolId                = SecureChannel::Id.ToFullyQualifiedSpecForm();
+    auto protocolId                    = SecureChannel::Id;
     uint16_t protocolCode              = static_cast<uint16_t>(StatusCode::InvalidFabricConfig);
     uint8_t data[6]                    = { 42, 19, 3, 1, 3, 0 };
     const uint16_t dataLen             = 6;

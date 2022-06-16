@@ -29,10 +29,10 @@
 #include <ble/BleError.h>
 #include <ble/BleLayer.h>
 #include <ble/BleUUID.h>
+#include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/Darwin/BleConnectionDelegate.h>
 #include <setup_payload/SetupPayload.h>
-#include <support/logging/CHIPLogging.h>
 
 #import "UUIDHelper.h"
 
@@ -48,6 +48,7 @@ constexpr uint64_t kScanningTimeoutInSeconds = 60;
 @property (strong, nonatomic) CBPeripheral * peripheral;
 @property (strong, nonatomic) CBUUID * shortServiceUUID;
 @property (nonatomic, readonly, nullable) dispatch_source_t timer;
+@property (unsafe_unretained, nonatomic) bool found;
 @property (unsafe_unretained, nonatomic) uint16_t deviceDiscriminator;
 @property (unsafe_unretained, nonatomic) void * appState;
 @property (unsafe_unretained, nonatomic) BleConnectionDelegate::OnConnectionCompleteFunct onConnectionComplete;
@@ -77,12 +78,12 @@ namespace DeviceLayer {
             ble.centralManager = [ble.centralManager initWithDelegate:ble queue:ble.workQueue];
         }
 
-        BLE_ERROR BleConnectionDelegateImpl::CancelConnection()
+        CHIP_ERROR BleConnectionDelegateImpl::CancelConnection()
         {
             ChipLogProgress(Ble, "%s", __FUNCTION__);
             [ble stop];
             ble = nil;
-            return BLE_NO_ERROR;
+            return CHIP_NO_ERROR;
         }
     } // namespace Internal
 } // namespace DeviceLayer
@@ -103,13 +104,14 @@ namespace DeviceLayer {
         _chipWorkQueue = chip::DeviceLayer::PlatformMgrImpl().GetWorkQueue();
         _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _workQueue);
         _centralManager = [CBCentralManager alloc];
+        _found = false;
 
         dispatch_source_set_event_handler(_timer, ^{
             [self stop];
             _onConnectionError(_appState, BLE_ERROR_APP_CLOSED_CONNECTION);
         });
         dispatch_source_set_timer(
-            _timer, dispatch_walltime(NULL, kScanningTimeoutInSeconds * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 5 * NSEC_PER_SEC);
+            _timer, dispatch_walltime(nullptr, kScanningTimeoutInSeconds * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 5 * NSEC_PER_SEC);
     }
 
     return self;
@@ -157,7 +159,7 @@ namespace DeviceLayer {
                 NSData * serviceData = [servicesData objectForKey:serviceUUID];
 
                 NSUInteger length = [serviceData length];
-                if (length == 7) {
+                if (length >= 7) {
                     const uint8_t * bytes = (const uint8_t *) [serviceData bytes];
                     uint8_t opCode = bytes[0];
                     uint16_t discriminator = (bytes[1] | (bytes[2] << 8)) & 0xfff;
@@ -184,10 +186,8 @@ namespace DeviceLayer {
     constexpr uint16_t kManualSetupDiscriminatorFieldBitMask = maxManualDiscriminatorValue << manualSetupDiscriminatorOffsetInBits;
     if (_deviceDiscriminator == (_deviceDiscriminator & kManualSetupDiscriminatorFieldBitMask)) {
         return _deviceDiscriminator == (discriminator & kManualSetupDiscriminatorFieldBitMask);
-    } else {
-        // else compare the entire thing
-        return _deviceDiscriminator == discriminator;
-    }
+    } // else compare the entire thing
+    return _deviceDiscriminator == discriminator;
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral
@@ -203,29 +203,28 @@ namespace DeviceLayer {
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error
 {
     if (nil != error) {
-        ChipLogError(Ble, "BLE:Error finding Chip Service in the device: [%@]", error.localizedDescription);
+        ChipLogError(Ble, "BLE:Error finding Chip Service in the device: [%s]", [error.localizedDescription UTF8String]);
     }
 
-    bool found;
-
     for (CBService * service in peripheral.services) {
-        if ([service.UUID.data isEqualToData:_shortServiceUUID.data]) {
-            found = true;
+        if ([service.UUID.data isEqualToData:_shortServiceUUID.data] && !self.found) {
             [peripheral discoverCharacteristics:nil forService:service];
+            self.found = true;
             break;
         }
     }
 
-    if (!found || error != nil) {
+    if (!self.found || error != nil) {
         ChipLogError(Ble, "Service not found on the device.");
-        _onConnectionError(_appState, BLE_ERROR_INCORRECT_STATE);
+        _onConnectionError(_appState, CHIP_ERROR_INCORRECT_STATE);
     }
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error
 {
     if (nil != error) {
-        ChipLogError(Ble, "BLE:Error finding Characteristics in Chip service on the device: [%@]", error.localizedDescription);
+        ChipLogError(
+            Ble, "BLE:Error finding Characteristics in Chip service on the device: [%s]", [error.localizedDescription UTF8String]);
     }
 
     // XXX error ?
@@ -244,7 +243,8 @@ namespace DeviceLayer {
             _mBleLayer->HandleWriteConfirmation((__bridge void *) peripheral, &svcId, &charId);
         });
     } else {
-        ChipLogError(Ble, "BLE:Error writing Characteristics in Chip service on the device: [%@]", error.localizedDescription);
+        ChipLogError(
+            Ble, "BLE:Error writing Characteristics in Chip service on the device: [%s]", [error.localizedDescription UTF8String]);
         dispatch_async(_chipWorkQueue, ^{
             _mBleLayer->HandleConnectionError((__bridge void *) peripheral, BLE_ERROR_GATT_WRITE_FAILED);
         });
@@ -270,7 +270,8 @@ namespace DeviceLayer {
             }
         });
     } else {
-        ChipLogError(Ble, "BLE:Error subscribing/unsubcribing some characteristic on the device: [%@]", error.localizedDescription);
+        ChipLogError(Ble, "BLE:Error subscribing/unsubcribing some characteristic on the device: [%s]",
+            [error.localizedDescription UTF8String]);
         dispatch_async(_chipWorkQueue, ^{
             if (isNotifying) {
                 // we're still notifying, so we must failed the unsubscription
@@ -307,11 +308,12 @@ namespace DeviceLayer {
         } else {
             ChipLogError(Ble, "Failed at allocating buffer for incoming BLE data");
             dispatch_async(_chipWorkQueue, ^{
-                _mBleLayer->HandleConnectionError((__bridge void *) peripheral, BLE_ERROR_NO_MEMORY);
+                _mBleLayer->HandleConnectionError((__bridge void *) peripheral, CHIP_ERROR_NO_MEMORY);
             });
         }
     } else {
-        ChipLogError(Ble, "BLE:Error receiving indication of Characteristics on the device: [%@]", error.localizedDescription);
+        ChipLogError(
+            Ble, "BLE:Error receiving indication of Characteristics on the device: [%s]", [error.localizedDescription UTF8String]);
         dispatch_async(_chipWorkQueue, ^{
             _mBleLayer->HandleConnectionError((__bridge void *) peripheral, BLE_ERROR_GATT_INDICATE_FAILED);
         });

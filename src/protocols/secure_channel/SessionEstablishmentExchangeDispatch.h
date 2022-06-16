@@ -25,50 +25,24 @@
 #pragma once
 
 #include <messaging/ExchangeMessageDispatch.h>
-#include <transport/TransportMgr.h>
 
 namespace chip {
 
 class SessionEstablishmentExchangeDispatch : public Messaging::ExchangeMessageDispatch
 {
 public:
-    SessionEstablishmentExchangeDispatch() {}
-
-    virtual ~SessionEstablishmentExchangeDispatch() {}
-
-    CHIP_ERROR Init(TransportMgrBase * transportMgr)
+    static ExchangeMessageDispatch & Instance()
     {
-        ReturnErrorCodeIf(transportMgr == nullptr, CHIP_ERROR_INVALID_ARGUMENT);
-        mTransportMgr = transportMgr;
-        return ExchangeMessageDispatch::Init();
+        static SessionEstablishmentExchangeDispatch instance;
+        return instance;
     }
 
-    CHIP_ERROR ResendMessage(SecureSessionHandle session, EncryptedPacketBufferHandle && message,
-                             EncryptedPacketBufferHandle * retainedMessage) const override;
-
-    CHIP_ERROR OnMessageReceived(const PayloadHeader & payloadHeader, uint32_t messageId,
-                                 const Transport::PeerAddress & peerAddress,
-                                 Messaging::ReliableMessageContext * reliableMessageContext) override;
-
-    const Transport::PeerAddress & GetPeerAddress() const { return mPeerAddress; }
-
-    void SetPeerAddress(const Transport::PeerAddress & address) { mPeerAddress = address; }
+    SessionEstablishmentExchangeDispatch() {}
+    ~SessionEstablishmentExchangeDispatch() override {}
 
 protected:
-    CHIP_ERROR SendMessageImpl(SecureSessionHandle session, PayloadHeader & payloadHeader, System::PacketBufferHandle && message,
-                               EncryptedPacketBufferHandle * retainedMessage) override;
-
-    bool MessagePermitted(uint16_t protocol, uint8_t type) override;
-
-    bool IsReliableTransmissionAllowed() override
-    {
-        // If the underlying transport is UDP.
-        return (mPeerAddress.GetTransportType() == Transport::Type::kUdp);
-    }
-
-private:
-    TransportMgrBase * mTransportMgr = nullptr;
-    Transport::PeerAddress mPeerAddress;
+    bool MessagePermitted(Protocols::Id, uint8_t type) override;
+    bool IsEncryptionRequired() const override { return false; }
 };
 
 } // namespace chip

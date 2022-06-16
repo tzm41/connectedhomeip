@@ -53,7 +53,7 @@ void ProcessShellLine(intptr_t context)
     esp_console_run(shellArgs->GetLine(), &ret);
     if (ret)
     {
-        printf("Error: %s\r\n", chip::ErrorStr(ret));
+        printf("Error: %d\r\n", ret);
     }
     else
     {
@@ -70,10 +70,6 @@ namespace Shell {
 
 void Engine::RunMainLoop()
 {
-    int ret = chip::Shell::streamer_init(chip::Shell::streamer_get());
-    assert(ret == 0);
-
-    Engine::Root().RegisterDefaultCommands();
     while (true)
     {
         const char * prompt = LOG_COLOR_I "> " LOG_RESET_COLOR;

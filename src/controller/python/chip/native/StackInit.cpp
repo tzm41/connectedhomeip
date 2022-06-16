@@ -17,11 +17,13 @@
 #include <errno.h>
 #include <pthread.h>
 
+#include <lib/support/CHIPMem.h>
+#include <lib/support/ErrorStr.h>
+#include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
+#include <platform/CommissionableDataProvider.h>
 #include <platform/PlatformManager.h>
-#include <support/CHIPMem.h>
-#include <support/ErrorStr.h>
-#include <support/logging/CHIPLogging.h>
+#include <platform/TestOnlyCommissionableDataProvider.h>
 
 namespace {
 
@@ -42,15 +44,18 @@ void * PlatformMainLoop(void *)
 
 extern "C" {
 
-CHIP_ERROR pychip_BLEMgrImpl_ConfigureBle(uint32_t bluetoothAdapterId)
+static_assert(std::is_same<uint32_t, chip::ChipError::StorageType>::value, "python assumes CHIP_ERROR maps to c_uint32");
+
+chip::ChipError::StorageType pychip_BLEMgrImpl_ConfigureBle(uint32_t bluetoothAdapterId)
 {
 #if CHIP_DEVICE_LAYER_TARGET_LINUX && CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
     // By default, Linux device is configured as a BLE peripheral while the controller needs a BLE central.
     sBluetoothAdapterId = bluetoothAdapterId;
-    ReturnErrorOnFailure(
-        chip::DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(/* BLE adapter ID */ bluetoothAdapterId, /* BLE central */ true));
+    CHIP_ERROR err =
+        chip::DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(/* BLE adapter ID */ bluetoothAdapterId, /* BLE central */ true);
+    VerifyOrReturnError(err == CHIP_NO_ERROR, err.AsInteger());
 #endif
-    return CHIP_NO_ERROR;
+    return CHIP_NO_ERROR.AsInteger();
 }
 
 void pychip_native_init()
@@ -77,8 +82,17 @@ void pychip_native_init()
     {
         ChipLogError(DeviceLayer, "Failed to initialize CHIP stack: platform init failed: %s", chip::ErrorStr(err));
     }
-    int result   = pthread_create(&sPlatformMainThread, nullptr, PlatformMainLoop, nullptr);
+
+    // Hack needed due to the fact that DnsSd server uses the CommissionableDataProvider even
+    // when never starting operational advertising. This will not be used but prevents
+    // null pointer dereferences.
+    static chip::DeviceLayer::TestOnlyCommissionableDataProvider TestOnlyCommissionableDataProvider;
+    chip::DeviceLayer::SetCommissionableDataProvider(&TestOnlyCommissionableDataProvider);
+
+    int result = pthread_create(&sPlatformMainThread, nullptr, PlatformMainLoop, nullptr);
+#if CHIP_ERROR_LOGGING
     int tmpErrno = errno;
+#endif // CHIP_ERROR_LOGGING
 
     if (result != 0)
     {

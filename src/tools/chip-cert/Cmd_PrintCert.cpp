@@ -28,6 +28,7 @@
 
 namespace {
 
+using namespace chip;
 using namespace chip::ArgParser;
 using namespace chip::Credentials;
 using namespace chip::ASN1;
@@ -35,7 +36,7 @@ using namespace chip::ASN1;
 #define CMD_NAME "chip-cert print-cert"
 
 bool HandleOption(const char * progName, OptionSet * optSet, int id, const char * name, const char * arg);
-bool HandleNonOptionArgs(const char * progName, int argc, char * argv[]);
+bool HandleNonOptionArgs(const char * progName, int argc, char * const argv[]);
 
 // clang-format off
 OptionDef gCmdOptionDefs[] =
@@ -100,7 +101,7 @@ bool HandleOption(const char * progName, OptionSet * optSet, int id, const char 
     return true;
 }
 
-bool HandleNonOptionArgs(const char * progName, int argc, char * argv[])
+bool HandleNonOptionArgs(const char * progName, int argc, char * const argv[])
 {
     if (argc == 0)
     {
@@ -127,12 +128,12 @@ void Indent(FILE * file, int count)
     }
 }
 
-void PrintHexField(FILE * file, const char * name, int indent, uint16_t count, const uint8_t * data, int countPerRow = 16)
+void PrintHexField(FILE * file, const char * name, int indent, size_t count, const uint8_t * data, size_t countPerRow = 16)
 {
     Indent(file, indent);
     indent += fprintf(file, "%s: ", name);
 
-    for (uint16_t i = 0; i < count; i++)
+    for (size_t i = 0; i < count; i++)
     {
         if (i != 0 && i != count && i % countPerRow == 0)
         {
@@ -155,8 +156,8 @@ void PrintEpochTime(FILE * file, const char * name, int indent, uint32_t epochTi
     Indent(file, indent);
     fprintf(file, "%s: ", name);
 
-    fprintf(file, "0x%08" PRIX32 "  ( %04" PRId16 "/%02" PRId8 "/%02" PRId8 " %02" PRId8 ":%02" PRId8 ":%02" PRId8 " )\n",
-            epochTime, asn1Time.Year, asn1Time.Month, asn1Time.Day, asn1Time.Hour, asn1Time.Minute, asn1Time.Second);
+    fprintf(file, "0x%08" PRIX32 "  ( %04d/%02d/%02d %02d:%02d:%02d )\n", epochTime, asn1Time.Year, asn1Time.Month, asn1Time.Day,
+            asn1Time.Hour, asn1Time.Minute, asn1Time.Second);
 }
 
 void PrintDN(FILE * file, const char * name, int indent, const ChipDN * dn)
@@ -171,20 +172,20 @@ void PrintDN(FILE * file, const char * name, int indent, const ChipDN * dn)
     {
         if (IsChip64bitDNAttr(dn->rdn[i].mAttrOID))
         {
-            snprintf(valueStr, sizeof(valueStr), "%016" PRIX64, dn->rdn[i].mAttrValue.mChipVal);
+            snprintf(valueStr, sizeof(valueStr), "%016" PRIX64, dn->rdn[i].mChipVal);
         }
         else if (IsChip32bitDNAttr(dn->rdn[i].mAttrOID))
         {
-            snprintf(valueStr, sizeof(valueStr), "%08" PRIX32, static_cast<uint32_t>(dn->rdn[i].mAttrValue.mChipVal));
+            snprintf(valueStr, sizeof(valueStr), "%08" PRIX32, static_cast<uint32_t>(dn->rdn[i].mChipVal));
         }
         else
         {
-            uint32_t len = dn->rdn[i].mAttrValue.mString.mLen;
+            size_t len = dn->rdn[i].mString.size();
             if (len > sizeof(valueStr) - 1)
             {
                 len = sizeof(valueStr) - 1;
             }
-            memcpy(valueStr, dn->rdn[i].mAttrValue.mString.mValue, len);
+            memcpy(valueStr, dn->rdn[i].mString.data(), len);
             valueStr[len] = 0;
         }
 
@@ -209,8 +210,8 @@ bool PrintCert(const char * fileName, X509 * cert)
     ChipCertificateSet certSet;
     const ChipCertificateData * certData;
     chip::BitFlags<CertDecodeFlags> decodeFlags;
-    std::unique_ptr<uint8_t[]> certBuf(new uint8_t[kMaxChipCertBufSize]);
-    uint32_t certLen;
+    uint8_t chipCertBuf[kMaxCHIPCertLength];
+    MutableByteSpan chipCert(chipCertBuf);
     int indent = 4;
 
     VerifyOrExit(cert != nullptr, res = false);
@@ -218,17 +219,17 @@ bool PrintCert(const char * fileName, X509 * cert)
     res = OpenFile(fileName, file, true);
     VerifyTrueOrExit(res);
 
-    res = X509ToChipCert(cert, certBuf.get(), kMaxChipCertBufSize, certLen);
+    res = X509ToChipCert(cert, chipCert);
     VerifyTrueOrExit(res);
 
-    err = certSet.Init(1, 1024);
+    err = certSet.Init(1);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "Failed to initialize certificate set: %s\n", chip::ErrorStr(err));
         ExitNow(res = false);
     }
 
-    err = certSet.LoadCert(certBuf.get(), certLen, decodeFlags);
+    err = certSet.LoadCert(chipCert, decodeFlags);
     if (err != CHIP_NO_ERROR)
     {
         fprintf(stderr, "Error reading %s: %s\n", fileName, chip::ErrorStr(err));
@@ -256,7 +257,7 @@ bool PrintCert(const char * fileName, X509 * cert)
     Indent(file, indent);
     fprintf(file, "Curve Id        : %s\n", GetOIDName(certData->mPubKeyCurveOID));
 
-    PrintHexField(file, "Public Key      ", indent, certData->mPublicKeyLen, certData->mPublicKey);
+    PrintHexField(file, "Public Key      ", indent, certData->mPublicKey.size(), certData->mPublicKey.data());
 
     Indent(file, indent);
     fprintf(file, "Extensions:\n");
@@ -350,22 +351,18 @@ bool PrintCert(const char * fileName, X509 * cert)
 
     if (certData->mCertFlags.Has(CertFlags::kExtPresent_SubjectKeyId))
     {
-        PrintHexField(file, "Subject Key Id   ", indent, certData->mSubjectKeyId.mLen, certData->mSubjectKeyId.mId,
-                      certData->mSubjectKeyId.mLen);
+        PrintHexField(file, "Subject Key Id   ", indent, certData->mSubjectKeyId.size(), certData->mSubjectKeyId.data(),
+                      certData->mSubjectKeyId.size());
     }
 
     if (certData->mCertFlags.Has(CertFlags::kExtPresent_AuthKeyId))
     {
-        PrintHexField(file, "Authority Key Id ", indent, certData->mAuthKeyId.mLen, certData->mAuthKeyId.mId,
-                      certData->mAuthKeyId.mLen);
+        PrintHexField(file, "Authority Key Id ", indent, certData->mAuthKeyId.size(), certData->mAuthKeyId.data(),
+                      certData->mAuthKeyId.size());
     }
 
     indent -= 4;
-    Indent(file, indent);
-    fprintf(file, "Signature:\n");
-    indent += 4;
-    PrintHexField(file, "r", indent, certData->mSignature.RLen, certData->mSignature.R);
-    PrintHexField(file, "s", indent, certData->mSignature.SLen, certData->mSignature.S);
+    PrintHexField(file, "Signature       ", indent, certData->mSignature.size(), certData->mSignature.data());
 
 exit:
     CloseFile(file);

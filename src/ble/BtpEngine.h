@@ -37,7 +37,7 @@
 #include <ble/BleConfig.h>
 
 #include <ble/BleError.h>
-#include <support/BitFlags.h>
+#include <lib/support/BitFlags.h>
 #include <system/SystemPacketBuffer.h>
 
 namespace chip {
@@ -103,19 +103,19 @@ public:
     static const uint16_t sMaxFragmentSize;
 
     // Public functions:
-    BLE_ERROR Init(void * an_app_state, bool expect_first_ack);
+    CHIP_ERROR Init(void * an_app_state, bool expect_first_ack);
 
     inline void SetTxFragmentSize(uint16_t size) { mTxFragmentSize = size; }
     inline void SetRxFragmentSize(uint16_t size) { mRxFragmentSize = size; }
 
-    uint16_t GetRxFragmentSize() { return mRxFragmentSize; }
-    uint16_t GetTxFragmentSize() { return mTxFragmentSize; }
+    uint16_t GetRxFragmentSize() const { return mRxFragmentSize; }
+    uint16_t GetTxFragmentSize() const { return mTxFragmentSize; }
 
     SequenceNumber_t GetAndIncrementNextTxSeqNum();
     SequenceNumber_t GetAndRecordRxAckSeqNum();
 
-    inline SequenceNumber_t GetLastReceivedSequenceNumber() { return mRxNewestUnackedSeqNum; }
-    inline SequenceNumber_t GetNewestUnackedSentSequenceNumber() { return mTxNewestUnackedSeqNum; }
+    inline SequenceNumber_t GetLastReceivedSequenceNumber() const { return mRxNewestUnackedSeqNum; }
+    inline SequenceNumber_t GetNewestUnackedSentSequenceNumber() const { return mTxNewestUnackedSeqNum; }
 
     inline bool ExpectingAck() const { return mExpectingAck; }
 
@@ -130,10 +130,7 @@ public:
     inline SequenceNumber_t SetRxPacketSeq(SequenceNumber_t seq) { return (mRxPacketSeq = seq); }
     inline SequenceNumber_t TxPacketSeq() { return mTxPacketSeq; }
     inline SequenceNumber_t RxPacketSeq() { return mRxPacketSeq; }
-    inline bool IsCommandPacket(const PacketBufferHandle & p)
-    {
-        return BitFlags<HeaderFlags>(*(p->Start())).Has(HeaderFlags::kCommandMessage);
-    }
+    static bool IsCommandPacket(const PacketBufferHandle & p);
     inline void PushPacketTag(const PacketBufferHandle & p, PacketType_t type)
     {
         p->SetStart(p->Start() - sizeof(type));
@@ -150,10 +147,10 @@ public:
 
     bool HasUnackedData() const;
 
-    BLE_ERROR HandleCharacteristicReceived(System::PacketBufferHandle && data, SequenceNumber_t & receivedAck,
-                                           bool & didReceiveAck);
+    CHIP_ERROR HandleCharacteristicReceived(System::PacketBufferHandle && data, SequenceNumber_t & receivedAck,
+                                            bool & didReceiveAck);
     bool HandleCharacteristicSend(System::PacketBufferHandle data, bool send_ack);
-    BLE_ERROR EncodeStandAloneAck(const PacketBufferHandle & data);
+    CHIP_ERROR EncodeStandAloneAck(const PacketBufferHandle & data);
 
     PacketBufferHandle TakeRxPacket();
     PacketBufferHandle BorrowRxPacket() { return mRxBuf.Retain(); }
@@ -198,7 +195,7 @@ private:
 
     // Private functions:
     bool IsValidAck(SequenceNumber_t ack_num) const;
-    BLE_ERROR HandleAckReceived(SequenceNumber_t ack_num);
+    CHIP_ERROR HandleAckReceived(SequenceNumber_t ack_num);
 };
 
 } /* namespace Ble */

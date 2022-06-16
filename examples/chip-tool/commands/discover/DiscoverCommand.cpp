@@ -18,29 +18,7 @@
 
 #include "DiscoverCommand.h"
 
-constexpr uint16_t kWaitDurationInSeconds = 30;
-
-CHIP_ERROR DiscoverCommand::Run(PersistentStorage & storage, NodeId localId, NodeId remoteId)
+CHIP_ERROR DiscoverCommand::RunCommand()
 {
-    chip::Controller::CommissionerInitParams params;
-
-    params.storageDelegate                = &storage;
-    params.mDeviceAddressUpdateDelegate   = this;
-    params.operationalCredentialsDelegate = &mOpCredsIssuer;
-
-    ReturnErrorOnFailure(mCommissioner.SetUdpListenPort(storage.GetListenPort()));
-    ReturnErrorOnFailure(mCommissioner.Init(localId, params));
-    ReturnErrorOnFailure(mCommissioner.ServiceEvents());
-
-    ReturnErrorOnFailure(RunCommand(mNodeId, mFabricId));
-
-    UpdateWaitForResponse(true);
-    WaitForResponse(kWaitDurationInSeconds);
-
-    mCommissioner.ServiceEventSignal();
-    mCommissioner.Shutdown();
-
-    VerifyOrReturnError(GetCommandExitStatus(), CHIP_ERROR_INTERNAL);
-
-    return CHIP_NO_ERROR;
+    return RunCommand(mNodeId, mFabricId);
 }

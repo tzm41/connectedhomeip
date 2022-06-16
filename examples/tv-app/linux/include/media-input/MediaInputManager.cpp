@@ -16,117 +16,93 @@
  */
 
 #include "MediaInputManager.h"
-#include <app/common/gen/attribute-id.h>
-#include <app/common/gen/attribute-type.h>
-#include <app/common/gen/cluster-id.h>
-#include <app/common/gen/command-id.h>
-#include <app/util/af.h>
-#include <lib/core/CHIPSafeCasts.h>
-#include <map>
-#include <string>
-#include <support/CodeUtils.h>
 
-CHIP_ERROR MediaInputManager::Init()
+using namespace std;
+using namespace chip;
+using namespace chip::app::Clusters::MediaInput;
+
+MediaInputManager::MediaInputManager()
 {
-    CHIP_ERROR err = CHIP_NO_ERROR;
+    mCurrentInput = 1;
 
-    // TODO: Store feature map once it is supported
-    std::map<std::string, bool> featureMap;
-    featureMap["NU"] = true;
-    SuccessOrExit(err);
-exit:
-    return err;
-}
-
-bool MediaInputManager::proxySelectInputRequest(uint8_t input)
-{
-    // TODO: Insert code here
-    return true;
-}
-
-bool MediaInputManager::proxyShowInputStatusRequest()
-{
-    // TODO: Insert code here
-    return true;
-}
-
-bool MediaInputManager::proxyHideInputStatusRequest()
-{
-    // TODO: Insert code here
-    return true;
-}
-
-bool MediaInputManager::proxyRenameInputRequest(uint8_t input, std::string name)
-{
-    // TODO: Insert code here
-    return true;
-}
-
-std::vector<EmberAfMediaInputInfo> MediaInputManager::proxyGetInputList()
-{
-    // TODO: Insert code here
-    std::vector<EmberAfMediaInputInfo> mediaInputList;
-    int maximumVectorSize = 2;
-    char description[]    = "exampleDescription";
-    char name[]           = "exampleName";
-
-    for (int i = 0; i < maximumVectorSize; ++i)
+    for (int i = 1; i < 3; ++i)
     {
-        EmberAfMediaInputInfo mediaInput;
-        mediaInput.description = chip::ByteSpan(chip::Uint8::from_char(description), sizeof(description));
-        mediaInput.name        = chip::ByteSpan(chip::Uint8::from_char(name), sizeof(name));
-        mediaInput.inputType   = EMBER_ZCL_MEDIA_INPUT_TYPE_HDMI;
-        mediaInput.index       = static_cast<uint8_t>(1 + i);
-        mediaInputList.push_back(mediaInput);
-    }
-
-    return mediaInputList;
-}
-
-static void storeCurrentInput(chip::EndpointId endpoint, uint8_t currentInput)
-{
-    EmberAfStatus status =
-        emberAfWriteServerAttribute(endpoint, ZCL_MEDIA_INPUT_CLUSTER_ID, ZCL_MEDIA_INPUT_CURRENT_INPUT_ATTRIBUTE_ID,
-                                    (uint8_t *) &currentInput, ZCL_INT8U_ATTRIBUTE_TYPE);
-    if (status != EMBER_ZCL_STATUS_SUCCESS)
-    {
-        emberAfMediaPlaybackClusterPrintln("Failed to store media playback attribute.");
+        InputInfoType inputInfo;
+        inputInfo.description = chip::CharSpan::fromCharString("High-Definition Multimedia Interface");
+        inputInfo.name        = chip::CharSpan::fromCharString("HDMI");
+        inputInfo.inputType   = chip::app::Clusters::MediaInput::InputTypeEnum::kHdmi;
+        inputInfo.index       = static_cast<uint8_t>(i);
+        mInputs.push_back(inputInfo);
     }
 }
 
-bool emberAfMediaInputClusterSelectInputCallback(uint8_t input)
+CHIP_ERROR MediaInputManager::HandleGetInputList(chip::app::AttributeValueEncoder & aEncoder)
 {
-    bool success         = MediaInputManager().proxySelectInputRequest(input);
-    EmberAfStatus status = success ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_FAILURE;
-    if (success)
+    // TODO: Insert code here
+    return aEncoder.EncodeList([this](const auto & encoder) -> CHIP_ERROR {
+        for (auto const & inputInfo : this->mInputs)
+        {
+            ReturnErrorOnFailure(encoder.Encode(inputInfo));
+        }
+        return CHIP_NO_ERROR;
+    });
+}
+
+uint8_t MediaInputManager::HandleGetCurrentInput()
+{
+    return mCurrentInput;
+}
+
+bool MediaInputManager::HandleSelectInput(const uint8_t index)
+{
+    // TODO: Insert code here
+    bool mediaInputSelected = false;
+    for (InputInfoType & input : mInputs)
     {
-        storeCurrentInput(emberAfCurrentEndpoint(), input);
+        if (input.index == index)
+        {
+            mediaInputSelected = true;
+            mCurrentInput      = index;
+        }
     }
-    emberAfSendImmediateDefaultResponse(status);
+
+    return mediaInputSelected;
+}
+
+bool MediaInputManager::HandleShowInputStatus()
+{
+    ChipLogProgress(Zcl, " MediaInputManager::HandleShowInputStatus()");
+    for (auto const & inputInfo : this->mInputs)
+    {
+        string name(inputInfo.name.data(), inputInfo.name.size());
+        string desc(inputInfo.description.data(), inputInfo.description.size());
+        ChipLogProgress(Zcl, " [%d] type=%d selected=%d name=%s desc=%s", inputInfo.index,
+                        static_cast<uint16_t>(inputInfo.inputType), (mCurrentInput == inputInfo.index ? 1 : 0), name.c_str(),
+                        desc.c_str());
+    }
     return true;
 }
 
-bool emberAfMediaInputClusterShowInputStatusCallback()
+bool MediaInputManager::HandleHideInputStatus()
 {
-    bool success         = MediaInputManager().proxyShowInputStatusRequest();
-    EmberAfStatus status = success ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_FAILURE;
-    emberAfSendImmediateDefaultResponse(status);
+    ChipLogProgress(Zcl, " MediaInputManager::HandleHideInputStatus()");
     return true;
 }
 
-bool emberAfMediaInputClusterHideInputStatusCallback()
+bool MediaInputManager::HandleRenameInput(const uint8_t index, const chip::CharSpan & name)
 {
-    bool success         = MediaInputManager().proxyHideInputStatusRequest();
-    EmberAfStatus status = success ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_FAILURE;
-    emberAfSendImmediateDefaultResponse(status);
-    return true;
-}
+    // TODO: Insert code here
+    bool mediaInputRenamed = false;
 
-bool emberAfMediaInputClusterRenameInputCallback(uint8_t input, char * name)
-{
-    std::string nameString(name);
-    bool success         = MediaInputManager().proxyRenameInputRequest(input, nameString);
-    EmberAfStatus status = success ? EMBER_ZCL_STATUS_SUCCESS : EMBER_ZCL_STATUS_FAILURE;
-    emberAfSendImmediateDefaultResponse(status);
-    return true;
+    for (InputInfoType & input : mInputs)
+    {
+        if (input.index == index)
+        {
+            mediaInputRenamed = true;
+            memcpy(this->Data(index), name.data(), name.size());
+            input.name = chip::CharSpan(this->Data(index), name.size());
+        }
+    }
+
+    return mediaInputRenamed;
 }

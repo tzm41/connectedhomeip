@@ -25,7 +25,10 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include <protocols/Protocols.h>
+#include <protocols/interaction_model/StatusCode.h>
 
 /**
  *   @namespace chip::Protocols::InteractionModel
@@ -47,10 +50,11 @@ namespace InteractionModel {
 constexpr uint16_t kVersion = 0;
 
 /**
- * SecureChannel Protocol Message Types
+ * Interaction Model Protocol Message Types
  */
 enum class MsgType : uint8_t
 {
+    StatusResponse        = 0x01,
     ReadRequest           = 0x02,
     SubscribeRequest      = 0x03,
     SubscribeResponse     = 0x04,

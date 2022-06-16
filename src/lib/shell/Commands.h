@@ -45,10 +45,46 @@ void RegisterMetaCommands();
 void RegisterConfigCommands();
 
 /**
+ * This function registers the device management commands.
+ *
+ */
+void RegisterDeviceCommands();
+
+/**
+ * This function registers the OTA (Over-the-Air) software update commands.
+ *
+ */
+void RegisterOtaCommands();
+
+/**
+ * This function registers the device onboarding codes commands.
+ *
+ */
+void RegisterOnboardingCodesCommands();
+
+/**
  * This function registers the wifi commands.
  *
  */
 void RegisterWiFiCommands();
+
+/**
+ * This function registers the commissioning commands.
+ *
+ */
+void RegisterCommissioningCommands();
+
+/**
+ * This function registers the NFC commands.
+ *
+ */
+void RegisterNFCCommands();
+
+/**
+ * This function registers the DNS client commands.
+ *
+ */
+void RegisterDnsCommands();
 
 } // namespace Shell
 } // namespace chip

@@ -27,16 +27,15 @@
 #include "common.h"
 #include <app/EventLoggingTypes.h>
 #include <app/EventManagement.h>
+#include <lib/support/ErrorStr.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <protocols/secure_channel/PASESession.h>
-#include <support/ErrorStr.h>
 #include <system/SystemPacketBuffer.h>
-#include <system/SystemTimer.h>
-#include <transport/SecureSessionMgr.h>
+#include <transport/SessionManager.h>
 
-static uint64_t kLivenessDeviceStatus = chip::TLV::ContextTag(1);
-static bool gMockEventStop            = false;
-static bool gEventIsStopped           = false;
+static chip::TLV::Tag kLivenessDeviceStatus = chip::TLV::ContextTag(1);
+static bool gMockEventStop                  = false;
+static bool gEventIsStopped                 = false;
 
 EventGenerator::EventGenerator(size_t aNumStates, size_t aInitialState) : mNumStates(aNumStates), mState(aInitialState) {}
 
@@ -53,43 +52,53 @@ void LivenessEventGenerator::Generate(void)
     switch (mState)
     {
     case 0:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent1,
+                    chip::app::PriorityLevel::Critical);
         break;
 
     case 1:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent2,
+                    chip::app::PriorityLevel::Debug);
         break;
 
     case 2:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent1,
+                    chip::app::PriorityLevel::Critical);
         break;
 
     case 3:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_UNREACHABLE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_UNREACHABLE, kTestChangeEvent2,
+                    chip::app::PriorityLevel::Debug);
         break;
 
     case 4:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent1,
+                    chip::app::PriorityLevel::Critical);
         break;
 
     case 5:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_REBOOTING);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_REBOOTING, kTestChangeEvent2,
+                    chip::app::PriorityLevel::Debug);
         break;
 
     case 6:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent1,
+                    chip::app::PriorityLevel::Critical);
         break;
 
     case 7:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent2,
+                    chip::app::PriorityLevel::Debug);
         break;
 
     case 8:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent1,
+                    chip::app::PriorityLevel::Critical);
         break;
 
     case 9:
-        LogLiveness(chip::kTestDeviceNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE);
+        LogLiveness(kTestNodeId, kTestEndpointId, LIVENESS_DEVICE_STATUS_ONLINE, kTestChangeEvent2,
+                    chip::app::PriorityLevel::Debug);
         break;
 
     default:
@@ -101,22 +110,23 @@ void LivenessEventGenerator::Generate(void)
 
 CHIP_ERROR LivenessEventGenerator::WriteEvent(chip::TLV::TLVWriter & aWriter)
 {
-    CHIP_ERROR err = CHIP_NO_ERROR;
-    err            = aWriter.Put(kLivenessDeviceStatus, mStatus);
-    return err;
+    chip::TLV::TLVType dataContainerType;
+    ReturnErrorOnFailure(aWriter.StartContainer(chip::TLV::ContextTag(chip::to_underlying(chip::app::EventDataIB::Tag::kData)),
+                                                chip::TLV::kTLVType_Structure, dataContainerType));
+    ReturnErrorOnFailure(aWriter.Put(kLivenessDeviceStatus, mStatus));
+    return aWriter.EndContainer(dataContainerType);
 }
 
 chip::EventNumber LivenessEventGenerator::LogLiveness(chip::NodeId aNodeId, chip::EndpointId aEndpointId,
-                                                      LivenessDeviceStatus aStatus)
+                                                      LivenessDeviceStatus aStatus, chip::EventId aEventId,
+                                                      chip::app::PriorityLevel aPriorityLevel)
 {
     chip::app::EventManagement & logManager = chip::app::EventManagement::GetInstance();
     chip::EventNumber number                = 0;
-    chip::app::EventSchema schema           = {
-        aNodeId, aEndpointId, kTestClusterId, kLivenessChangeEvent, chip::app::PriorityLevel::Critical,
-    };
     chip::app::EventOptions options;
-    mStatus               = static_cast<int32_t>(aStatus);
-    options.mpEventSchema = &schema;
+    options.mPath     = { aEndpointId, kTestClusterId, aEventId };
+    options.mPriority = aPriorityLevel;
+    mStatus           = static_cast<int32_t>(aStatus);
     logManager.LogEvent(this, options, number);
     return number;
 }
@@ -132,7 +142,7 @@ MockEventGeneratorImpl::MockEventGeneratorImpl(void) :
 {}
 
 CHIP_ERROR MockEventGeneratorImpl::Init(chip::Messaging::ExchangeManager * apExchangeMgr, EventGenerator * apEventGenerator,
-                                        int aDelayBetweenEvents, bool aWraparound)
+                                        uint32_t aDelayBetweenEvents, bool aWraparound)
 {
     CHIP_ERROR err     = CHIP_NO_ERROR;
     mpExchangeMgr      = apExchangeMgr;
@@ -146,12 +156,13 @@ CHIP_ERROR MockEventGeneratorImpl::Init(chip::Messaging::ExchangeManager * apExc
         mEventsLeft = mpEventGenerator->GetNumStates();
 
     if (mTimeBetweenEvents != 0)
-        mpExchangeMgr->GetSessionMgr()->SystemLayer()->StartTimer(mTimeBetweenEvents, HandleNextEvent, this);
+        mpExchangeMgr->GetSessionManager()->SystemLayer()->StartTimer(chip::System::Clock::Milliseconds32(mTimeBetweenEvents),
+                                                                      HandleNextEvent, this);
 
     return err;
 }
 
-void MockEventGeneratorImpl::HandleNextEvent(chip::System::Layer * apSystemLayer, void * apAppState, chip::System::Error aErr)
+void MockEventGeneratorImpl::HandleNextEvent(chip::System::Layer * apSystemLayer, void * apAppState)
 {
     MockEventGeneratorImpl * generator = static_cast<MockEventGeneratorImpl *>(apAppState);
     if (gMockEventStop)
@@ -165,7 +176,8 @@ void MockEventGeneratorImpl::HandleNextEvent(chip::System::Layer * apSystemLayer
         generator->mEventsLeft--;
         if ((generator->mEventWraparound) || (generator->mEventsLeft > 0))
         {
-            apSystemLayer->StartTimer(generator->mTimeBetweenEvents, HandleNextEvent, generator);
+            apSystemLayer->StartTimer(chip::System::Clock::Milliseconds32(generator->mTimeBetweenEvents), HandleNextEvent,
+                                      generator);
         }
     }
 }
@@ -178,7 +190,7 @@ void MockEventGeneratorImpl::SetEventGeneratorStop()
     // This helps quit the standalone app in an orderly way without
     // spurious leaked timers.
     if (mTimeBetweenEvents != 0)
-        mpExchangeMgr->GetSessionMgr()->SystemLayer()->StartTimer(0, HandleNextEvent, this);
+        mpExchangeMgr->GetSessionManager()->SystemLayer()->StartTimer(chip::System::Clock::kZero, HandleNextEvent, this);
 }
 
 bool MockEventGeneratorImpl::IsEventGeneratorStopped()
@@ -189,8 +201,6 @@ bool MockEventGeneratorImpl::IsEventGeneratorStopped()
         gEventIsStopped = false;
         return true;
     }
-    else
-    {
-        return false;
-    }
+
+    return false;
 }

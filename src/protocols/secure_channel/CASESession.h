@@ -1,6 +1,6 @@
 /*
  *
- *    Copyright (c) 2021 Project CHIP Authors
+ *    Copyright (c) 2021-2022 Project CHIP Authors
  *    All rights reserved.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,254 +26,252 @@
 #pragma once
 
 #include <credentials/CHIPCert.h>
-#include <credentials/CHIPOperationalCredentials.h>
 #include <crypto/CHIPCryptoPAL.h>
 #if CHIP_CRYPTO_HSM
 #include <crypto/hsm/CHIPCryptoPALHsm.h>
 #endif
+#include <credentials/CertificateValidityPolicy.h>
+#include <credentials/FabricTable.h>
+#include <credentials/GroupDataProvider.h>
+#include <lib/core/CHIPTLV.h>
+#include <lib/core/ScopedNodeId.h>
+#include <lib/support/Base64.h>
 #include <messaging/ExchangeContext.h>
 #include <messaging/ExchangeDelegate.h>
+#include <protocols/secure_channel/CASEDestinationId.h>
 #include <protocols/secure_channel/Constants.h>
-#include <protocols/secure_channel/SessionEstablishmentDelegate.h>
+#include <protocols/secure_channel/PairingSession.h>
 #include <protocols/secure_channel/SessionEstablishmentExchangeDispatch.h>
-#include <support/Base64.h>
+#include <protocols/secure_channel/SessionResumptionStorage.h>
 #include <system/SystemPacketBuffer.h>
-#include <transport/PairingSession.h>
-#include <transport/PeerConnectionState.h>
-#include <transport/SecureSession.h>
+#include <transport/CryptoContext.h>
 #include <transport/raw/MessageHeader.h>
 #include <transport/raw/PeerAddress.h>
 
 namespace chip {
 
-constexpr uint16_t kAEADKeySize = 16;
+#ifdef ENABLE_HSM_CASE_EPHEMERAL_KEY
+#define CASE_EPHEMERAL_KEY 0xCA5EECD0
+#endif
 
-constexpr uint16_t kSigmaParamRandomNumberSize = 32;
-constexpr uint16_t kTrustedRootIdSize          = 20;
-constexpr uint16_t kMaxTrustedRootIds          = 5;
-
-constexpr uint16_t kIPKSize = 32;
-
-using namespace Crypto;
-using namespace Credentials;
-
-struct CASESessionSerialized;
-
-struct CASESessionSerializable
-{
-    uint16_t mSharedSecretLen;
-    uint8_t mSharedSecret[kMax_ECDH_Secret_Length];
-    uint16_t mMessageDigestLen;
-    uint8_t mMessageDigest[kSHA256_Hash_Length];
-    uint8_t mPairingComplete;
-    NodeId mPeerNodeId;
-    uint16_t mLocalKeyId;
-    uint16_t mPeerKeyId;
-};
-
-class DLL_EXPORT CASESession : public Messaging::ExchangeDelegate, public PairingSession
+// TODO: temporary derive from Messaging::UnsolicitedMessageHandler, actually the CASEServer should be the umh, it will be fixed
+// when implementing concurrent CASE session.
+class DLL_EXPORT CASESession : public Messaging::UnsolicitedMessageHandler,
+                               public Messaging::ExchangeDelegate,
+                               public PairingSession
 {
 public:
-    CASESession();
-    CASESession(CASESession &&)      = default;
-    CASESession(const CASESession &) = default;
-    CASESession & operator=(const CASESession &) = default;
-    CASESession & operator=(CASESession &&) = default;
+    ~CASESession() override;
 
-    virtual ~CASESession();
+    Transport::SecureSession::Type GetSecureSessionType() const override { return Transport::SecureSession::Type::kCASE; }
+    ScopedNodeId GetPeer() const override { return ScopedNodeId(mPeerNodeId, GetFabricIndex()); }
+    ScopedNodeId GetLocalScopedNodeId() const override { return ScopedNodeId(mLocalNodeId, GetFabricIndex()); }
+    CATValues GetPeerCATs() const override { return mPeerCATs; };
 
     /**
      * @brief
-     *   Initialize using operational credentials code and wait for session establishment requests.
+     *   Initialize using configured fabrics and wait for session establishment requests.
      *
-     * @param operationalCredentialSet      CHIP Certificate Set used to store the chain root of trust an validate peer node
-     *                                      certificates
-     * @param myKeyId                       Key ID to be assigned to the secure session on the peer node
+     * @param sessionManager                session manager from which to allocate a secure session object
+     * @param fabrics                       Table of fabrics that are currently configured on the device
+     * @param policy                        Optional application-provided certificate validity policy
      * @param delegate                      Callback object
+     * @param previouslyEstablishedPeer     If a session had previously been established successfully to a peer, this should
+     *                                      be set to its scoped node-id. Else, this should be initialized to a
+     *                                      default-constructed ScopedNodeId().
+     * @param mrpConfig                     MRP configuration to encode into Sigma2. If not provided, it won't be encoded.
      *
      * @return CHIP_ERROR     The result of initialization
      */
-    CHIP_ERROR ListenForSessionEstablishment(OperationalCredentialSet * operationalCredentialSet, uint16_t myKeyId,
-                                             SessionEstablishmentDelegate * delegate);
+    CHIP_ERROR PrepareForSessionEstablishment(
+        SessionManager & sessionManager, FabricTable * fabrics, SessionResumptionStorage * sessionResumptionStorage,
+        Credentials::CertificateValidityPolicy * policy, SessionEstablishmentDelegate * delegate,
+        ScopedNodeId previouslyEstablishedPeer,
+        Optional<ReliableMessageProtocolConfig> mrpConfig = Optional<ReliableMessageProtocolConfig>::Missing());
 
     /**
      * @brief
      *   Create and send session establishment request using device's operational credentials.
      *
-     * @param peerAddress                   Address of peer with which to establish a session.
-     * @param operationalCredentialSet      CHIP Certificate Set used to store the chain root of trust an validate peer node
-     *                                      certificates
-     * @param peerNodeId                    Node id of the peer node
-     * @param myKeyId                       Key ID to be assigned to the secure session on the peer node
+     * @param sessionManager                session manager from which to allocate a secure session object
+     * @param fabricTable                   The fabric table that contains a fabric in common with the peer
+     * @param peerScopedNodeId              Node to which we want to establish a session
      * @param exchangeCtxt                  The exchange context to send and receive messages with the peer
+     * @param policy                        Optional application-provided certificate validity policy
      * @param delegate                      Callback object
      *
      * @return CHIP_ERROR      The result of initialization
      */
-    CHIP_ERROR EstablishSession(const Transport::PeerAddress peerAddress, OperationalCredentialSet * operationalCredentialSet,
-                                NodeId peerNodeId, uint16_t myKeyId, Messaging::ExchangeContext * exchangeCtxt,
-                                SessionEstablishmentDelegate * delegate);
+    CHIP_ERROR
+    EstablishSession(SessionManager & sessionManager, FabricTable * fabricTable, ScopedNodeId peerScopedNodeId,
+                     Messaging::ExchangeContext * exchangeCtxt, SessionResumptionStorage * sessionResumptionStorage,
+                     Credentials::CertificateValidityPolicy * policy, SessionEstablishmentDelegate * delegate,
+                     Optional<ReliableMessageProtocolConfig> mrpConfig = Optional<ReliableMessageProtocolConfig>::Missing());
+
+    /**
+     * @brief Set the Group Data Provider which will be used to look up IPKs
+     *
+     * The GroupDataProvider set MUST have key sets available through `GetIpkKeySet` method
+     * for the FabricIndex that is associated with the CASESession's FabricInfo.
+     *
+     * @param groupDataProvider - Pointer to the group data provider (if nullptr, will error at start of
+     *                            establishment, not here).
+     */
+    void SetGroupDataProvider(Credentials::GroupDataProvider * groupDataProvider) { mGroupDataProvider = groupDataProvider; }
+
+    /**
+     * Parse a sigma1 message.  This function will return success only if the
+     * message passes schema checks.  Specifically:
+     *   * The tags come in order.
+     *   * The required tags are present.
+     *   * The values for the tags that are present satisfy schema requirements
+     *     (e.g. constraints on octet string lengths)
+     *   * Either resumptionID and initiatorResume1MIC are both present or both
+     *     absent.
+     *
+     * On success, the initiatorRandom, initiatorSessionId, destinationId,
+     * initiatorEphPubKey outparams will be set to the corresponding values in
+     * the message.
+     *
+     * On success, either the resumptionRequested outparam will be set to true
+     * and the  resumptionID and initiatorResumeMIC outparams will be set to
+     * valid values, or the resumptionRequested outparam will be set to false.
+     */
+    CHIP_ERROR ParseSigma1(TLV::ContiguousBufferTLVReader & tlvReader, ByteSpan & initiatorRandom, uint16_t & initiatorSessionId,
+                           ByteSpan & destinationId, ByteSpan & initiatorEphPubKey, bool & resumptionRequested,
+                           ByteSpan & resumptionId, ByteSpan & initiatorResumeMIC);
 
     /**
      * @brief
-     *   Derive a secure session from the established session. The API will return error
-     *   if called before session is established.
+     *   Derive a secure session from the established session. The API will return error if called before session is established.
      *
-     * @param session     Reference to the secure session that will be
-     *                    initialized once session establishment is complete
-     * @param role        Role of the new session (initiator or responder)
+     * @param session     Reference to the secure session that will be initialized once session establishment is complete
      * @return CHIP_ERROR The result of session derivation
      */
-    virtual CHIP_ERROR DeriveSecureSession(SecureSession & session, SecureSession::SessionRole role) override;
+    CHIP_ERROR DeriveSecureSession(CryptoContext & session) const override;
 
-    /**
-     * @brief
-     *  Return the associated secure session peer NodeId
-     *
-     * @return NodeId The associated peer NodeId
-     */
-    NodeId GetPeerNodeId() const { return mConnectionState.GetPeerNodeId(); }
-
-    /**
-     * @brief
-     *  Return the associated peer key id
-     *
-     * @return uint16_t The associated peer key id
-     */
-    uint16_t GetPeerKeyId() override { return mConnectionState.GetPeerKeyID(); }
-
-    /**
-     * @brief
-     *  Return the associated local key id
-     *
-     * @return uint16_t The assocated local key id
-     */
-    uint16_t GetLocalKeyId() override { return mConnectionState.GetLocalKeyID(); }
-
-    const char * GetI2RSessionInfo() const override { return "Sigma I2R Key"; }
-
-    const char * GetR2ISessionInfo() const override { return "Sigma R2I Key"; }
-
-    Transport::PeerConnectionState & PeerConnection() { return mConnectionState; }
-
-    /**
-     * @brief Serialize the Pairing Session to a string.
-     **/
-    CHIP_ERROR Serialize(CASESessionSerialized & output);
-
-    /**
-     * @brief Deserialize the Pairing Session from the string.
-     **/
-    CHIP_ERROR Deserialize(CASESessionSerialized & input);
-
-    /**
-     * @brief Serialize the CASESession to the given serializable data structure for secure pairing
-     **/
-    CHIP_ERROR ToSerializable(CASESessionSerializable & output);
-
-    /**
-     * @brief Reconstruct secure pairing class from the serializable data structure.
-     **/
-    CHIP_ERROR FromSerializable(const CASESessionSerializable & output);
-
-    SessionEstablishmentExchangeDispatch & MessageDispatch() { return mMessageDispatch; }
-
-    //// ExchangeDelegate Implementation ////
-    void OnMessageReceived(Messaging::ExchangeContext * ec, const PacketHeader & packetHeader, const PayloadHeader & payloadHeader,
-                           System::PacketBufferHandle && payload) override;
-    void OnResponseTimeout(Messaging::ExchangeContext * ec) override;
-    Messaging::ExchangeMessageDispatch * GetMessageDispatch(Messaging::ReliableMessageMgr * rmMgr,
-                                                            SecureSessionMgr * sessionMgr) override
+    //// UnsolicitedMessageHandler Implementation ////
+    CHIP_ERROR OnUnsolicitedMessageReceived(const PayloadHeader & payloadHeader, ExchangeDelegate *& newDelegate) override
     {
-        return &mMessageDispatch;
+        newDelegate = this;
+        return CHIP_NO_ERROR;
     }
 
-private:
-    enum SigmaErrorType : uint8_t
-    {
-        kNoSharedTrustRoots   = 0x01,
-        kInvalidSignature     = 0x04,
-        kInvalidResumptionTag = 0x05,
-        kUnsupportedVersion   = 0x06,
-        kUnexpected           = 0xff,
-    };
+    //// ExchangeDelegate Implementation ////
+    CHIP_ERROR OnMessageReceived(Messaging::ExchangeContext * ec, const PayloadHeader & payloadHeader,
+                                 System::PacketBufferHandle && payload) override;
+    void OnResponseTimeout(Messaging::ExchangeContext * ec) override;
+    Messaging::ExchangeMessageDispatch & GetMessageDispatch() override { return SessionEstablishmentExchangeDispatch::Instance(); }
 
-    CHIP_ERROR Init(OperationalCredentialSet * operationalCredentialSet, uint16_t myKeyId, SessionEstablishmentDelegate * delegate);
+    //// SessionDelegate ////
+    void OnSessionReleased() override;
 
-    CHIP_ERROR SendSigmaR1();
-    CHIP_ERROR HandleSigmaR1_and_SendSigmaR2(const System::PacketBufferHandle & msg);
-    CHIP_ERROR HandleSigmaR1(const System::PacketBufferHandle & msg);
-    CHIP_ERROR SendSigmaR2();
-    CHIP_ERROR HandleSigmaR2_and_SendSigmaR3(const System::PacketBufferHandle & msg);
-    CHIP_ERROR HandleSigmaR2(const System::PacketBufferHandle & msg);
-    CHIP_ERROR SendSigmaR3();
-    CHIP_ERROR HandleSigmaR3(const System::PacketBufferHandle & msg);
+    FabricIndex GetFabricIndex() const { return mFabricIndex; }
 
-    CHIP_ERROR SendSigmaR1Resume();
-    CHIP_ERROR HandleSigmaR1Resume_and_SendSigmaR2Resume(const PacketHeader & header, const System::PacketBufferHandle & msg);
-
-    CHIP_ERROR FindValidTrustedRoot(const uint8_t ** msgIterator, uint32_t nTrustedRoots);
-    CHIP_ERROR ConstructSaltSigmaR2(const System::PacketBufferHandle & rand, const P256PublicKey & pubkey, const uint8_t * ipk,
-                                    size_t ipkLen, System::PacketBufferHandle & salt);
-    CHIP_ERROR Validate_and_RetrieveResponderID(const uint8_t ** msgIterator, P256PublicKey & responderID,
-                                                const uint8_t ** responderOpCert, uint16_t & responderOpCertLen);
-    CHIP_ERROR ConstructSaltSigmaR3(const uint8_t * ipk, size_t ipkLen, System::PacketBufferHandle & salt);
-    CHIP_ERROR ConstructSignedCredentials(const uint8_t ** msgIterator, const uint8_t * responderOpCert,
-                                          uint16_t responderOpCertLen, System::PacketBufferHandle & signedCredentials,
-                                          P256ECDSASignature & signature, size_t sigLen);
-    CHIP_ERROR ComputeIPK(const uint16_t sessionID, uint8_t * ipk, size_t ipkLen);
-
-    void SendErrorMsg(SigmaErrorType errorCode);
-
-    // This function always returns an error. The error value corresponds to the error in the received message.
-    // The returned error value helps top level message receiver/dispatcher to close the exchange context
-    // in a more seamless manner.
-    CHIP_ERROR HandleErrorMsg(const System::PacketBufferHandle & msg);
-
-    void CloseExchange();
-
-    // TODO: Remove this and replace with system method to retrieve current time
-    CHIP_ERROR SetEffectiveTime(void);
-
+    // TODO: remove Clear, we should create a new instance instead reset the old instance.
+    /** @brief This function zeroes out and resets the memory used by the object.
+     **/
     void Clear();
 
-    CHIP_ERROR ValidateReceivedMessage(Messaging::ExchangeContext * ec, const PacketHeader & packetHeader,
-                                       const PayloadHeader & payloadHeader, System::PacketBufferHandle & msg);
-
-    SessionEstablishmentDelegate * mDelegate = nullptr;
-
-    Protocols::SecureChannel::MsgType mNextExpectedMsg = Protocols::SecureChannel::MsgType::CASE_SigmaErr;
-
-    Hash_SHA256_stream mCommissioningHash;
-    P256PublicKey mRemotePubKey;
-    P256Keypair mEphemeralKey;
-    P256ECDHDerivedSecret mSharedSecret;
-    OperationalCredentialSet * mOpCredSet;
-    CertificateKeyId mTrustedRootId;
-    ValidationContext mValidContext;
-
-    uint8_t mMessageDigest[kSHA256_Hash_Length];
-    uint8_t mIPK[kIPKSize];
-    uint8_t mRemoteIPK[kIPKSize];
-
-    Messaging::ExchangeContext * mExchangeCtxt = nullptr;
-    SessionEstablishmentExchangeDispatch mMessageDispatch;
-
-    struct SigmaErrorMsg
+private:
+    enum class State : uint8_t
     {
-        SigmaErrorType error;
+        kInitialized       = 0,
+        kSentSigma1        = 1,
+        kSentSigma2        = 2,
+        kSentSigma3        = 3,
+        kSentSigma1Resume  = 4,
+        kSentSigma2Resume  = 5,
+        kFinished          = 6,
+        kFinishedViaResume = 7,
     };
 
-protected:
-    bool mPairingComplete = false;
+    /*
+     * Initialize the object given a reference to the SessionManager, certificate validity policy and a delegate which will be
+     * notified of any further progress on this session.
+     *
+     * If we're either establishing or finished establishing a session to a peer in either initiator or responder
+     * roles, the node id of that peer should be provided in sessionEvictionHint. Else, it should be initialized
+     * to a default-constructed ScopedNodeId().
+     *
+     */
+    CHIP_ERROR Init(SessionManager & sessionManager, Credentials::CertificateValidityPolicy * policy,
+                    SessionEstablishmentDelegate * delegate, const ScopedNodeId & sessionEvictionHint);
 
-    Transport::PeerConnectionState mConnectionState;
+    // On success, sets mIpk to the correct value for outgoing Sigma1 based on internal state
+    CHIP_ERROR RecoverInitiatorIpk();
+    // On success, sets locally maching mFabricInfo in internal state to the entry matched by
+    // destinationId/initiatorRandom from processing of Sigma1, and sets mIpk to the right IPK.
+    CHIP_ERROR FindLocalNodeFromDestionationId(const ByteSpan & destinationId, const ByteSpan & initiatorRandom);
+
+    CHIP_ERROR SendSigma1();
+    CHIP_ERROR HandleSigma1_and_SendSigma2(System::PacketBufferHandle && msg);
+    CHIP_ERROR HandleSigma1(System::PacketBufferHandle && msg);
+    CHIP_ERROR TryResumeSession(SessionResumptionStorage::ConstResumptionIdView resumptionId, ByteSpan resume1MIC,
+                                ByteSpan initiatorRandom);
+    CHIP_ERROR SendSigma2();
+    CHIP_ERROR HandleSigma2_and_SendSigma3(System::PacketBufferHandle && msg);
+    CHIP_ERROR HandleSigma2(System::PacketBufferHandle && msg);
+    CHIP_ERROR HandleSigma2Resume(System::PacketBufferHandle && msg);
+    CHIP_ERROR SendSigma3();
+    CHIP_ERROR HandleSigma3(System::PacketBufferHandle && msg);
+
+    CHIP_ERROR SendSigma2Resume();
+
+    CHIP_ERROR ConstructSaltSigma2(const ByteSpan & rand, const Crypto::P256PublicKey & pubkey, const ByteSpan & ipk,
+                                   MutableByteSpan & salt);
+    CHIP_ERROR ValidatePeerIdentity(const ByteSpan & peerNOC, const ByteSpan & peerICAC, NodeId & peerNodeId,
+                                    Crypto::P256PublicKey & peerPublicKey);
+    CHIP_ERROR ConstructTBSData(const ByteSpan & senderNOC, const ByteSpan & senderICAC, const ByteSpan & senderPubKey,
+                                const ByteSpan & receiverPubKey, uint8_t * tbsData, size_t & tbsDataLen);
+    CHIP_ERROR ConstructSaltSigma3(const ByteSpan & ipk, MutableByteSpan & salt);
+
+    CHIP_ERROR ConstructSigmaResumeKey(const ByteSpan & initiatorRandom, const ByteSpan & resumptionID, const ByteSpan & skInfo,
+                                       const ByteSpan & nonce, MutableByteSpan & resumeKey);
+
+    CHIP_ERROR GenerateSigmaResumeMIC(const ByteSpan & initiatorRandom, const ByteSpan & resumptionID, const ByteSpan & skInfo,
+                                      const ByteSpan & nonce, MutableByteSpan & resumeMIC);
+    CHIP_ERROR ValidateSigmaResumeMIC(const ByteSpan & resumeMIC, const ByteSpan & initiatorRandom, const ByteSpan & resumptionID,
+                                      const ByteSpan & skInfo, const ByteSpan & nonce);
+
+    void OnSuccessStatusReport() override;
+    CHIP_ERROR OnFailureStatusReport(Protocols::SecureChannel::GeneralStatusCode generalCode, uint16_t protocolCode) override;
+
+    CHIP_ERROR GetHardcodedTime();
+
+    CHIP_ERROR SetEffectiveTime();
+
+    CHIP_ERROR ValidateReceivedMessage(Messaging::ExchangeContext * ec, const PayloadHeader & payloadHeader,
+                                       const System::PacketBufferHandle & msg);
+
+    Crypto::Hash_SHA256_stream mCommissioningHash;
+    Crypto::P256PublicKey mRemotePubKey;
+#ifdef ENABLE_HSM_CASE_EPHEMERAL_KEY
+    Crypto::P256KeypairHSM mEphemeralKey;
+#else
+    Crypto::P256Keypair mEphemeralKey;
+#endif
+    Crypto::P256ECDHDerivedSecret mSharedSecret;
+    Credentials::ValidationContext mValidContext;
+    Credentials::GroupDataProvider * mGroupDataProvider = nullptr;
+
+    uint8_t mMessageDigest[Crypto::kSHA256_Hash_Length];
+    uint8_t mIPK[kIPKSize];
+
+    SessionResumptionStorage * mSessionResumptionStorage = nullptr;
+
+    FabricTable * mFabricsTable = nullptr;
+    FabricIndex mFabricIndex    = kUndefinedFabricIndex;
+    NodeId mPeerNodeId          = kUndefinedNodeId;
+    NodeId mLocalNodeId         = kUndefinedNodeId;
+    CATValues mPeerCATs;
+
+    SessionResumptionStorage::ResumptionIdStorage mResumeResumptionId; // ResumptionId which is used to resume this session
+    SessionResumptionStorage::ResumptionIdStorage mNewResumptionId;    // ResumptionId which is stored to resume future session
+    // Sigma1 initiator random, maintained to be reused post-Sigma1, such as when generating Sigma2 S2RK key
+    uint8_t mInitiatorRandom[kSigmaParamRandomNumberSize];
+
+    State mState;
 };
-
-typedef struct CASESessionSerialized
-{
-    // Extra uint64_t to account for padding bytes (NULL termination, and some decoding overheads)
-    uint8_t inner[BASE64_ENCODED_LEN(sizeof(CASESessionSerializable) + sizeof(uint64_t))];
-} CASESessionSerialized;
 
 } // namespace chip

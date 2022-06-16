@@ -19,31 +19,25 @@
 #pragma once
 
 #include "../../config/PersistentStorage.h"
-#include "../common/Command.h"
-#include <controller/ExampleOperationalCredentialsIssuer.h>
+#include "../common/CHIPCommand.h"
 
-class DiscoverCommand : public Command, public chip::Controller::DeviceAddressUpdateDelegate
+class DiscoverCommand : public CHIPCommand
 {
 public:
-    DiscoverCommand(const char * commandName) : Command(commandName)
+    DiscoverCommand(const char * commandName, CredentialIssuerCommands * credsIssuerConfig) :
+        CHIPCommand(commandName, credsIssuerConfig)
     {
         AddArgument("nodeid", 0, UINT64_MAX, &mNodeId);
         AddArgument("fabricid", 0, UINT64_MAX, &mFabricId);
     }
 
-    /////////// DeviceAddressUpdateDelegate Interface /////////
-    void OnAddressUpdateComplete(NodeId nodeId, CHIP_ERROR error) override{};
-
-    /////////// Command Interface /////////
-    CHIP_ERROR Run(PersistentStorage & storage, NodeId localId, NodeId remoteId) override;
+    /////////// CHIPCommand Interface /////////
+    CHIP_ERROR RunCommand() override;
+    chip::System::Clock::Timeout GetWaitDuration() const override { return chip::System::Clock::Seconds16(30); }
 
     virtual CHIP_ERROR RunCommand(NodeId remoteId, uint64_t fabricId) = 0;
-
-protected:
-    ChipDeviceCommissioner mCommissioner;
 
 private:
     chip::NodeId mNodeId;
     uint64_t mFabricId;
-    chip::Controller::ExampleOperationalCredentialsIssuer mOpCredsIssuer;
 };
